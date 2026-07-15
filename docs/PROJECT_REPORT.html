@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube API 專案分析報告</title>
+<style>
+  :root {
+    --page:        #f9f9f7;
+    --surface-1:   #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --line-strong: #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    --edge:        #898781;
+    --series-1:    #2a78d6;
+    --series-1-soft: #e6f0fb;
+    --aqua:        #1baf7a;
+    --violet:      #4a3aa7;
+    --critical:    #d03b3b;
+    --serious:     #ec835a;
+    --warning:     #fab219;
+    --good:        #0ca30c;
+    --crit-bg:     rgba(208,59,59,0.08);
+    --ser-bg:      rgba(236,131,90,0.10);
+    --warn-bg:     rgba(250,178,25,0.12);
+    --good-bg:     rgba(12,163,12,0.08);
+    --info-bg:     rgba(42,120,214,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:        #0d0d0d;
+      --surface-1:   #1a1a19;
+      --ink:         #ffffff;
+      --ink-2:       #c3c2b7;
+      --muted:       #898781;
+      --grid:        #2c2c2a;
+      --line-strong: #383835;
+      --border:      rgba(255,255,255,0.12);
+      --edge:        #898781;
+      --series-1:    #3987e5;
+      --series-1-soft: #16283d;
+      --aqua:        #199e70;
+      --violet:      #9085e9;
+      --crit-bg:     rgba(208,59,59,0.16);
+      --ser-bg:      rgba(236,131,90,0.14);
+      --warn-bg:     rgba(250,178,25,0.12);
+      --good-bg:     rgba(12,163,12,0.14);
+      --info-bg:     rgba(57,135,229,0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    line-height: 1.75;
+    font-size: 16px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ── Header ─────────────────────────── */
+  header.hero { padding: 56px 0 8px; }
+  .hero-kicker {
+    font-size: 13px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px;
+  }
+  h1 { font-size: 34px; line-height: 1.3; margin: 0 0 10px; letter-spacing: .01em; }
+  .hero-sub { color: var(--ink-2); max-width: 46em; margin: 0; }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  .meta-chip {
+    font-size: 13px; color: var(--ink-2); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 14px;
+  }
+  .meta-chip code { font-size: 12px; }
+
+  /* ── TOC ────────────────────────────── */
+  nav.toc {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--page); border-bottom: 1px solid var(--grid);
+    margin: 28px -24px 0; padding: 10px 24px;
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  nav.toc a {
+    font-size: 13.5px; color: var(--ink-2); text-decoration: none;
+    padding: 4px 12px; border-radius: 999px; border: 1px solid transparent;
+  }
+  nav.toc a:hover { background: var(--surface-1); border-color: var(--border); color: var(--ink); }
+
+  /* ── Sections ───────────────────────── */
+  section { margin-top: 64px; }
+  h2 {
+    font-size: 24px; margin: 0 0 6px; scroll-margin-top: 70px;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .no { font-size: 14px; color: var(--muted); font-weight: 600; letter-spacing: .08em; }
+  .lede { color: var(--ink-2); margin: 0 0 24px; max-width: 50em; }
+  h3 { font-size: 17px; margin: 32px 0 10px; }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px;
+  }
+  .figure { padding: 20px 12px 8px; overflow-x: auto; }
+  .figure svg { display: block; margin: 0 auto; min-width: 720px; max-width: 940px; width: 100%; height: auto; }
+  .figcap {
+    font-size: 13.5px; color: var(--muted); text-align: center;
+    padding: 10px 16px 12px; margin: 0;
+  }
+
+  /* ── Stat tiles ─────────────────────── */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px 14px; }
+  .tile .v { font-size: 32px; font-weight: 700; line-height: 1.15; }
+  .tile .v small { font-size: 15px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+  .tile .k { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+
+  /* ── Tables ─────────────────────────── */
+  .tblwrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: color-mix(in srgb, var(--surface-1) 70%, var(--page)); }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 13px; background: color-mix(in srgb, var(--ink) 6%, transparent);
+    padding: 1px 6px; border-radius: 5px;
+  }
+
+  /* ── Module cards ───────────────────── */
+  .mods { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .mod { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .mod h4 { margin: 0 0 2px; font-size: 15.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mod .role { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 1px 10px; }
+  .role-core { color: var(--series-1); background: var(--info-bg); }
+  .role-util { color: var(--aqua); background: var(--good-bg); }
+  .role-tool { color: var(--violet); background: color-mix(in srgb, var(--violet) 10%, transparent); }
+  .mod .loc { font-size: 12.5px; color: var(--muted); }
+  .mod p { font-size: 14px; color: var(--ink-2); margin: 8px 0 0; }
+
+  /* ── Quota bars ─────────────────────── */
+  .bars { padding: 22px 24px 6px; }
+  .bar-title { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .bar-sub { font-size: 13px; color: var(--muted); margin: 0 0 18px; }
+  .bar-row { display: grid; grid-template-columns: 190px 1fr; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .bar-label { font-size: 13.5px; color: var(--ink-2); text-align: right; font-family: ui-monospace, Consolas, monospace; }
+  .bar-track { position: relative; height: 20px; }
+  .bar-fill {
+    height: 20px; background: var(--series-1);
+    border-radius: 0 4px 4px 0; min-width: 3px;
+    display: inline-block; vertical-align: middle;
+  }
+  .bar-val { font-size: 13px; color: var(--ink-2); margin-left: 8px; font-variant-numeric: tabular-nums; vertical-align: middle; }
+  .bar-row:hover .bar-fill { filter: brightness(1.12); }
+  .bar-axis { border-left: 1px solid var(--line-strong); }
+  .bar-note { font-size: 13px; color: var(--muted); margin: 16px 0 14px; }
+
+  /* capacity band */
+  .cap { padding: 22px 24px 18px; margin-top: 14px; }
+  .cap-band { display: flex; gap: 2px; height: 26px; border-radius: 6px; overflow: hidden; }
+  .cap-soft { background: var(--series-1); flex: 0 0 80%; }
+  .cap-buffer { background: var(--grid); flex: 1; }
+  .cap-labels { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .cap-legend { display: flex; gap: 22px; font-size: 13px; color: var(--ink-2); margin-top: 12px; flex-wrap: wrap; }
+  .cap-legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+
+  /* ── Findings ───────────────────────── */
+  .cat { margin-top: 30px; }
+  .cat-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .cat-head h3 { margin: 0; }
+  .sev { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 12px; letter-spacing: .04em; }
+  .sev::before { content: "●"; margin-right: 6px; font-size: 10px; }
+  .sev-crit { color: var(--critical); background: var(--crit-bg); }
+  .sev-high { color: var(--serious); background: var(--ser-bg); }
+  .sev-med  { color: color-mix(in srgb, var(--warning) 60%, var(--ink)); background: var(--warn-bg); }
+  .sev-low  { color: var(--good); background: var(--good-bg); }
+  ol.findings { margin: 0; padding-left: 0; counter-reset: fnd; list-style: none; }
+  ol.findings > li {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 20px 14px 58px; margin-bottom: 10px; position: relative;
+    counter-increment: fnd;
+  }
+  ol.findings > li::before {
+    content: counter(fnd, decimal-leading-zero);
+    position: absolute; left: 20px; top: 15px;
+    font-size: 13px; font-weight: 700; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  ol.findings b { display: block; font-size: 15px; }
+  ol.findings .d { font-size: 14px; color: var(--ink-2); margin-top: 2px; }
+  .fix { font-size: 13.5px; margin-top: 6px; color: var(--ink-2); }
+  .fix::before { content: "建議"; font-size: 11.5px; font-weight: 700; color: var(--good);
+    border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); border-radius: 5px;
+    padding: 0 6px; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--series-1); background: var(--info-bg);
+    border-radius: 0 12px 12px 0; padding: 16px 22px; margin: 26px 0;
+  }
+  .callout.warn { border-left-color: var(--critical); background: var(--crit-bg); }
+  .callout h4 { margin: 0 0 6px; font-size: 15px; }
+  .callout ol, .callout ul { margin: 6px 0 0; padding-left: 22px; }
+  .callout li { margin: 3px 0; font-size: 14.5px; }
+
+  footer { margin-top: 80px; padding-top: 20px; border-top: 1px solid var(--grid);
+    font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+  /* ── SVG shared ─────────────────────── */
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif; fill: var(--ink); }
+  svg .t14 { font-size: 14px; }
+  svg .t13 { font-size: 13px; fill: var(--ink-2); }
+  svg .t12 { font-size: 12px; fill: var(--muted); }
+  svg .t12i { font-size: 12px; fill: var(--ink-2); }
+  svg .tmono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  svg .lbl { font-size: 12.5px; fill: var(--muted); font-weight: 600; }
+  svg .band { fill: color-mix(in srgb, var(--ink) 3%, transparent); }
+  svg .bandlbl { font-size: 11.5px; letter-spacing: .14em; fill: var(--muted); font-weight: 700; }
+  svg .box { fill: var(--surface-1); stroke: var(--line-strong); stroke-width: 1.2; rx: 8; }
+  svg .box-core { stroke: var(--series-1); stroke-width: 1.6; }
+  svg .box-red { stroke: var(--critical); }
+  svg .pill { fill: var(--series-1-soft); stroke: var(--series-1); stroke-width: 1.4; }
+  svg .dec { fill: var(--surface-1); stroke: var(--violet); stroke-width: 1.4; }
+  svg .edge { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+  svg .edge-d { stroke-dasharray: 5 4; }
+  svg .tt { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="hero-kicker">Project Analysis Report</div>
+  <h1>YouTube API 播放清單工具組<br>專案分析報告</h1>
+  <p class="hero-sub">
+    針對 <code>D:\Python3Projects\youtube_api</code> 全部原始碼的靜態研讀結果：
+    系統架構、核心流程、API 配額策略，以及 24 項待改善問題盤點。
+    本報告為純文件產出，<b>未變動任何程式碼</b>。
+  </p>
+  <div class="hero-meta">
+    <span class="meta-chip">報告日期：2026-07-13</span>
+    <span class="meta-chip">語言：Python 3.8+（Poetry）</span>
+    <span class="meta-chip">API：YouTube Data API v3</span>
+    <span class="meta-chip">部署：Windows／PyInstaller</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#overview">總覽</a>
+  <a href="#arch">系統架構</a>
+  <a href="#flow">排序流程</a>
+  <a href="#oauth">OAuth 認證</a>
+  <a href="#modules">模組說明</a>
+  <a href="#quota">配額分析</a>
+  <a href="#findings">問題與優化建議</a>
+</nav>
+
+<!-- ═══════════════ 1. 總覽 ═══════════════ -->
+<section id="overview">
+  <h2><span class="no">01</span>專案總覽</h2>
+  <p class="lede">
+    這是一組個人 YouTube 播放清單自動化工具。核心是 <code>playlist_sorter.py</code>：
+    每天定時把 13 個播放清單依「頻道 A→Z、觀看數高→低」重新排序並寫回 YouTube，
+    全程受自製配額管理器保護；另附三個以 API Key 運作的唯讀輔助工具（歌單搜尋、重複偵測、影片搜尋）。
+  </p>
+  <div class="tiles">
+    <div class="tile"><div class="v">6</div><div class="k">Python 模組（4 入口＋2 共用）</div></div>
+    <div class="tile"><div class="v">≈770<small>行</small></div><div class="k">自寫程式碼總行數</div></div>
+    <div class="tile"><div class="v">13</div><div class="k">受管理的播放清單</div></div>
+    <div class="tile"><div class="v">≈2,507<small>首</small></div><div class="k">管理歌曲總數（依程式註解）</div></div>
+  </div>
+</section>
+
+<!-- ═══════════════ 2. 架構圖 ═══════════════ -->
+<section id="arch">
+  <h2><span class="no">02</span>系統架構圖</h2>
+  <p class="lede">
+    四層結構：入口工具 → 共用模組 → 認證機制 → Google 雲端 API。
+    只有主力工具 <code>playlist_sorter.py</code> 走 OAuth 2.0（因為需要「寫入」權限），
+    其餘三個唯讀工具都使用 API Key。
+  </p>
+  <div class="card figure">
+  <svg viewBox="0 0 940 700" role="img" aria-label="系統架構圖：入口工具層、共用模組、認證層與 YouTube Data API 的關係">
+    <defs>
+      <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"/>
+      </marker>
+    </defs>
+
+    <!-- layer bands -->
+    <rect class="band" x="20" y="36"  width="900" height="140" rx="10"/>
+    <rect class="band" x="20" y="206" width="900" height="110" rx="10"/>
+    <rect class="band" x="20" y="346" width="900" height="110" rx="10"/>
+    <rect class="band" x="20" y="486" width="900" height="180" rx="10"/>
+    <text class="bandlbl" x="36" y="30">入口工具層（ENTRY POINTS）</text>
+    <text class="bandlbl" x="36" y="200">共用模組（SHARED）</text>
+    <text class="bandlbl" x="36" y="340">認證層（AUTH）</text>
+    <text class="bandlbl" x="36" y="480">GOOGLE 雲端</text>
+
+    <!-- band 1: entry tools -->
+    <rect class="box box-core" x="36" y="66" width="200" height="96" rx="8"/>
+    <text class="tmono tt" x="136" y="94" text-anchor="middle">playlist_sorter.py</text>
+    <text class="t13" x="136" y="116" text-anchor="middle">自動排序＋每日排程</text>
+    <text class="t12" x="136" y="136" text-anchor="middle">主力工具・OAuth 讀寫</text>
+
+    <rect class="box" x="256" y="66" width="200" height="96" rx="8"/>
+    <text class="tmono tt" x="356" y="94" text-anchor="middle">main.py</text>
+    <text class="t13" x="356" y="116" text-anchor="middle">歌單載入＋關鍵字搜尋</text>
+    <text class="t12" x="356" y="136" text-anchor="middle">結果分段 ≤1,900 字</text>
+
+    <rect class="box" x="476" y="66" width="200" height="96" rx="8"/>
+    <text class="tmono tt" x="576" y="94" text-anchor="middle">check_duplicate.py</text>
+    <text class="t13" x="576" y="116" text-anchor="middle">重複歌曲偵測</text>
+    <text class="t12" x="576" y="136" text-anchor="middle">標題子字串分組報告</text>
+
+    <rect class="box" x="696" y="66" width="200" height="96" rx="8"/>
+    <text class="tmono tt" x="796" y="94" text-anchor="middle">search.py</text>
+    <text class="t13" x="796" y="116" text-anchor="middle">影片關鍵字搜尋</text>
+    <text class="t12" x="796" y="136" text-anchor="middle">REST・近 180 天</text>
+
+    <!-- band 2: shared modules -->
+    <rect class="box" x="36" y="234" width="200" height="64" rx="8"/>
+    <text class="tmono tt" x="136" y="260" text-anchor="middle">quota_manager.py</text>
+    <text class="t12i" x="136" y="282" text-anchor="middle">配額計數・軟/硬上限</text>
+
+    <rect class="box" x="256" y="234" width="200" height="64" rx="8"/>
+    <text class="tmono tt" x="356" y="260" text-anchor="middle">log_utils.py</text>
+    <text class="t12i" x="356" y="282" text-anchor="middle">ANSI 彩色 logger</text>
+
+    <!-- band 3: auth -->
+    <rect class="box" x="36" y="374" width="310" height="64" rx="8"/>
+    <text class="t14 tt" x="191" y="398" text-anchor="middle">OAuth 2.0（讀寫）</text>
+    <text class="t12i" x="191" y="420" text-anchor="middle">client_secret.json ＋ token.pickle</text>
+
+    <rect class="box" x="476" y="374" width="420" height="64" rx="8"/>
+    <text class="t14 tt" x="686" y="398" text-anchor="middle">API Key（唯讀）</text>
+    <text class="t12i" x="686" y="420" text-anchor="middle">⚠️ 目前以明碼寫死於三個檔案中</text>
+
+    <!-- band 4: Google -->
+    <rect class="box" x="36" y="514" width="860" height="130" rx="8"/>
+    <text class="t14 tt" x="468" y="546" text-anchor="middle">YouTube Data API v3（每日免費配額 10,000 units）</text>
+    <g>
+      <rect x="76"  y="572" width="190" height="46" rx="8" fill="var(--info-bg)"/>
+      <text class="tmono" x="171" y="591" text-anchor="middle">playlistItems.list</text>
+      <text class="t12" x="171" y="609" text-anchor="middle">1 unit／頁</text>
+      <rect x="286" y="572" width="170" height="46" rx="8" fill="var(--info-bg)"/>
+      <text class="tmono" x="371" y="591" text-anchor="middle">videos.list</text>
+      <text class="t12" x="371" y="609" text-anchor="middle">1 unit／50 部</text>
+      <rect x="476" y="572" width="200" height="46" rx="8" fill="var(--ser-bg)"/>
+      <text class="tmono" x="576" y="591" text-anchor="middle">playlistItems.update</text>
+      <text class="t12" x="576" y="609" text-anchor="middle">50 units／次</text>
+      <rect x="696" y="572" width="170" height="46" rx="8" fill="var(--crit-bg)"/>
+      <text class="tmono" x="781" y="591" text-anchor="middle">search.list</text>
+      <text class="t12" x="781" y="609" text-anchor="middle">100 units／次</text>
+    </g>
+
+    <!-- edges -->
+    <line class="edge" x1="136" y1="162" x2="136" y2="230" marker-end="url(#arA)"/>
+    <line class="edge" x1="196" y1="162" x2="306" y2="230" marker-end="url(#arA)"/>
+    <line class="edge" x1="236" y1="266" x2="252" y2="266" marker-end="url(#arA)"/>
+    <polyline class="edge" points="36,130 26,130 26,406 32,406" marker-end="url(#arA)"/>
+    <polyline class="edge" points="356,162 356,192 520,192 520,370" marker-end="url(#arA)"/>
+    <line class="edge" x1="576" y1="162" x2="576" y2="370" marker-end="url(#arA)"/>
+    <line class="edge" x1="796" y1="162" x2="796" y2="370" marker-end="url(#arA)"/>
+    <line class="edge" x1="191" y1="438" x2="191" y2="510" marker-end="url(#arA)"/>
+    <line class="edge" x1="686" y1="438" x2="686" y2="510" marker-end="url(#arA)"/>
+  </svg>
+  <p class="figcap">
+    圖 1 — 系統架構。<code>quota_manager</code> 與 <code>log_utils</code> 僅由主力工具鏈使用；
+    另外 <code>main.py</code> 內尚保留一段舊版 OAuth 程式（<code>oauth_access_user()</code>，未在主流程使用）。
+  </p>
+  </div>
+</section>
+
+<!-- ═══════════════ 3. 排序流程圖 ═══════════════ -->
+<section id="flow">
+  <h2><span class="no">03</span>核心排序流程圖</h2>
+  <p class="lede">
+    <code>playlist_sorter.py</code> 的完整生命週期：啟動後立即執行一輪，之後每天 16:05 排程再跑。
+    每輪依「規模小 → 大」處理 13 份清單，讓配額耗盡前小清單能全數完成。
+    最關鍵的省配額設計：<b>已在正確位置的歌直接跳過（0 unit）</b>，只有真的要搬移才付出 50 units。
+  </p>
+  <div class="card figure">
+  <svg viewBox="0 0 940 1560" role="img" aria-label="playlist_sorter.py 排序作業流程圖">
+    <defs>
+      <marker id="arF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"/>
+      </marker>
+    </defs>
+
+    <!-- A start -->
+    <rect class="pill" x="210" y="10" width="300" height="48" rx="24"/>
+    <text class="t14 tt" x="360" y="40" text-anchor="middle">啟動 playlist_sorter.py</text>
+    <line class="edge" x1="360" y1="58" x2="360" y2="88" marker-end="url(#arF)"/>
+
+    <!-- B -->
+    <rect class="box" x="150" y="92" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="126" text-anchor="middle">註冊每日 16:05 排程，並立即執行一次作業</text>
+    <line class="edge" x1="360" y1="148" x2="360" y2="178" marker-end="url(#arF)"/>
+
+    <!-- C -->
+    <rect class="box" x="150" y="182" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="216" text-anchor="middle">建立 QuotaManager（軟上限 8,000／硬上限 10,000）</text>
+    <line class="edge" x1="360" y1="238" x2="360" y2="268" marker-end="url(#arF)"/>
+
+    <!-- D (playlist-loop target) -->
+    <rect class="box box-core" x="150" y="272" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="306" text-anchor="middle">取出下一份播放清單（共 13 份，規模小 → 大）</text>
+    <line class="edge" x1="360" y1="328" x2="360" y2="358" marker-end="url(#arF)"/>
+
+    <!-- E -->
+    <rect class="box" x="150" y="362" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="396" text-anchor="middle">OAuth 2.0 認證（流程見圖 3）</text>
+    <line class="edge" x1="360" y1="418" x2="360" y2="448" marker-end="url(#arF)"/>
+
+    <!-- F -->
+    <rect class="box" x="150" y="452" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="486" text-anchor="middle">playlistItems.list 分頁抓取全部項目（1 unit／頁）</text>
+    <line class="edge" x1="360" y1="508" x2="360" y2="538" marker-end="url(#arF)"/>
+
+    <!-- G -->
+    <rect class="box" x="150" y="542" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="576" text-anchor="middle">videos.list 批次抓取觀看數＋頻道（1 unit／50 部）</text>
+    <line class="edge" x1="360" y1="598" x2="360" y2="628" marker-end="url(#arF)"/>
+
+    <!-- H -->
+    <rect class="box" x="150" y="632" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="666" text-anchor="middle">本地計算理想順序：頻道 A→Z、觀看數 高→低</text>
+    <line class="edge" x1="360" y1="688" x2="360" y2="718" marker-end="url(#arF)"/>
+
+    <!-- I loop head -->
+    <rect class="box box-core" x="150" y="722" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="756" text-anchor="middle">逐一比對每個位置：理想曲目 vs 目前曲目</text>
+    <line class="edge" x1="360" y1="778" x2="360" y2="808" marker-end="url(#arF)"/>
+
+    <!-- J decision: correct position? -->
+    <polygon class="dec" points="360,812 520,864 360,916 200,864"/>
+    <text class="t14" x="360" y="870" text-anchor="middle">該位置已是正確歌曲？</text>
+    <text class="lbl" x="372" y="940">否</text>
+    <line class="edge" x1="360" y1="916" x2="360" y2="946" marker-end="url(#arF)"/>
+    <!-- yes → skip -->
+    <text class="lbl" x="536" y="856">是</text>
+    <line class="edge" x1="520" y1="864" x2="626" y2="864" marker-end="url(#arF)"/>
+    <rect class="box" x="630" y="838" width="250" height="52" rx="8"/>
+    <text class="t14" x="755" y="870" text-anchor="middle">跳過此曲（0 unit）</text>
+
+    <!-- L decision: quota -->
+    <polygon class="dec" points="360,950 520,1002 360,1054 200,1002"/>
+    <text class="t14" x="360" y="1008" text-anchor="middle">+50 units 超過軟上限 8,000？</text>
+    <text class="lbl" x="372" y="1078">否</text>
+    <line class="edge" x1="360" y1="1054" x2="360" y2="1084" marker-end="url(#arF)"/>
+    <!-- yes → abort -->
+    <text class="lbl" x="536" y="994">是</text>
+    <line class="edge" x1="520" y1="1002" x2="626" y2="1002" marker-end="url(#arF)"/>
+    <rect class="box box-red" x="630" y="970" width="250" height="64" rx="8"/>
+    <text class="t14" x="755" y="996" text-anchor="middle">拋出 QuotaSoftLimitExceeded</text>
+    <text class="t13" x="755" y="1016" text-anchor="middle">中止「本輪全部」作業</text>
+
+    <!-- M update -->
+    <rect class="box" x="150" y="1088" width="420" height="66" rx="8"/>
+    <text class="t14" x="360" y="1114" text-anchor="middle">playlistItems.update 搬移至正確位置（50 units）</text>
+    <text class="t13" x="360" y="1136" text-anchor="middle">失敗自動重試 ≤5 次・指數退避＋隨機抖動・間隔 0.5s</text>
+
+    <!-- loop-back rail: update & skip → I -->
+    <polyline class="edge edge-d" points="570,1121 905,1121 905,750 576,750" marker-end="url(#arF)"/>
+    <polyline class="edge edge-d" points="880,864 905,864"/>
+    <text class="lbl" x="852" y="742">下一個位置</text>
+
+    <!-- loop-exit rail: I → N (all positions done) -->
+    <polyline class="edge edge-d" points="150,750 100,750 100,1236 146,1236" marker-end="url(#arF)"/>
+    <text class="lbl" x="52" y="1006" transform="rotate(-90 52 1006)">全部位置比對完畢</text>
+
+    <!-- N done -->
+    <rect class="box" x="150" y="1208" width="420" height="56" rx="8"/>
+    <text class="t14" x="360" y="1242" text-anchor="middle">此清單處理完畢</text>
+    <line class="edge" x1="360" y1="1264" x2="360" y2="1294" marker-end="url(#arF)"/>
+
+    <!-- O decision: more playlists? -->
+    <polygon class="dec" points="360,1298 520,1350 360,1402 200,1350"/>
+    <text class="t14" x="360" y="1356" text-anchor="middle">還有下一份播放清單？</text>
+    <!-- yes → back to D -->
+    <text class="lbl" x="150" y="1342">是</text>
+    <polyline class="edge edge-d" points="200,1350 40,1350 40,300 146,300" marker-end="url(#arF)"/>
+    <!-- no ↓ -->
+    <text class="lbl" x="372" y="1426">否</text>
+    <line class="edge" x1="360" y1="1402" x2="360" y2="1432" marker-end="url(#arF)"/>
+
+    <!-- P end -->
+    <rect class="pill" x="185" y="1436" width="350" height="52" rx="26"/>
+    <text class="t14 tt" x="360" y="1468" text-anchor="middle">本輪完成 → 待命至隔日 16:05</text>
+
+    <!-- abort → end -->
+    <polyline class="edge" points="755,1034 755,1052 930,1052 930,1462 539,1462" marker-end="url(#arF)"/>
+  </svg>
+  <p class="figcap">
+    圖 2 — 每日排序作業流程。紅框為配額保護的安全出口：一旦觸及軟上限，整輪作業立即中止，
+    保留 2,000 units 緩衝；隔日 16:05 從頭再跑（已排好的位置會被跳過，等於接續進度）。
+  </p>
+  </div>
+</section>
+
+<!-- ═══════════════ 4. OAuth 流程 ═══════════════ -->
+<section id="oauth">
+  <h2><span class="no">04</span>OAuth 2.0 認證流程圖</h2>
+  <p class="lede">
+    <code>PlaylistSorter._authenticate()</code> 的三段式策略：快取憑證 → 刷新 →
+    重新走瀏覽器授權。Refresh Token 失效（invalid_grant）時會自動刪除舊快取並重新授權，
+    不需人工介入清檔案。
+  </p>
+  <div class="card figure">
+  <svg viewBox="0 0 940 860" role="img" aria-label="OAuth 2.0 認證流程圖">
+    <defs>
+      <marker id="arO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"/>
+      </marker>
+    </defs>
+
+    <!-- A -->
+    <rect class="pill" x="140" y="12" width="240" height="44" rx="22"/>
+    <text class="t14 tt" x="260" y="40" text-anchor="middle">呼叫 _authenticate()</text>
+    <line class="edge" x1="260" y1="56" x2="260" y2="84" marker-end="url(#arO)"/>
+
+    <!-- B token exists? -->
+    <polygon class="dec" points="260,88 400,136 260,184 120,136"/>
+    <text class="t14" x="260" y="142" text-anchor="middle">token.pickle 存在？</text>
+    <text class="lbl" x="272" y="206">是</text>
+    <line class="edge" x1="260" y1="184" x2="260" y2="212" marker-end="url(#arO)"/>
+    <text class="lbl" x="420" y="128">否</text>
+    <polyline class="edge" points="400,136 700,136 700,224" marker-end="url(#arO)"/>
+
+    <!-- C load -->
+    <rect class="box" x="100" y="216" width="320" height="52" rx="8"/>
+    <text class="t14" x="260" y="248" text-anchor="middle">載入舊憑證</text>
+    <line class="edge" x1="260" y1="268" x2="260" y2="296" marker-end="url(#arO)"/>
+
+    <!-- D valid? -->
+    <polygon class="dec" points="260,300 400,348 260,396 120,348"/>
+    <text class="t14" x="260" y="354" text-anchor="middle">憑證仍然有效？</text>
+    <text class="lbl" x="86" y="340">是</text>
+    <polyline class="edge" points="120,348 48,348 48,786 326,786" marker-end="url(#arO)"/>
+    <text class="lbl" x="272" y="418">否</text>
+    <line class="edge" x1="260" y1="396" x2="260" y2="428" marker-end="url(#arO)"/>
+
+    <!-- E refresh token? -->
+    <polygon class="dec" points="260,432 400,480 260,528 120,480"/>
+    <text class="t14" x="260" y="478" text-anchor="middle">已過期且持有</text>
+    <text class="t14" x="260" y="496" text-anchor="middle">Refresh Token？</text>
+    <text class="lbl" x="416" y="472">否</text>
+    <polyline class="edge" points="400,480 470,480 470,244 536,244" marker-end="url(#arO)"/>
+    <text class="lbl" x="272" y="550">是</text>
+    <line class="edge" x1="260" y1="528" x2="260" y2="560" marker-end="url(#arO)"/>
+
+    <!-- F refresh -->
+    <rect class="box" x="100" y="564" width="320" height="52" rx="8"/>
+    <text class="t14" x="260" y="596" text-anchor="middle">credentials.refresh() 刷新 Access Token</text>
+    <line class="edge" x1="260" y1="616" x2="260" y2="648" marker-end="url(#arO)"/>
+
+    <!-- G success? -->
+    <polygon class="dec" points="260,652 400,700 260,748 120,700"/>
+    <text class="t14" x="260" y="706" text-anchor="middle">刷新成功？</text>
+    <text class="lbl" x="86" y="692">是</text>
+    <polyline class="edge" points="120,700 48,700"/>
+    <text class="lbl" x="416" y="692">否（invalid_grant）</text>
+    <polyline class="edge" points="400,700 490,700 490,266 536,266" marker-end="url(#arO)"/>
+
+    <!-- right column: re-auth -->
+    <rect class="box" x="540" y="228" width="320" height="52" rx="8"/>
+    <text class="t14" x="700" y="260" text-anchor="middle">移除舊 token.pickle（若存在）</text>
+    <line class="edge" x1="700" y1="280" x2="700" y2="320" marker-end="url(#arO)"/>
+
+    <rect class="box" x="540" y="324" width="320" height="64" rx="8"/>
+    <text class="t14" x="700" y="350" text-anchor="middle">開啟瀏覽器 OAuth 授權</text>
+    <text class="t13" x="700" y="372" text-anchor="middle">localhost:8080・scope: youtube（讀寫）</text>
+    <line class="edge" x1="700" y1="388" x2="700" y2="428" marker-end="url(#arO)"/>
+
+    <rect class="box" x="540" y="432" width="320" height="52" rx="8"/>
+    <text class="t14" x="700" y="464" text-anchor="middle">儲存新憑證至 token.pickle</text>
+    <polyline class="edge" points="700,484 700,786 634,786" marker-end="url(#arO)"/>
+
+    <!-- Z end -->
+    <rect class="pill" x="330" y="760" width="300" height="52" rx="26"/>
+    <text class="t14 tt" x="480" y="792" text-anchor="middle">build() — YouTube 服務建立完成</text>
+  </svg>
+  <p class="figcap">
+    圖 3 — 認證決策樹。左側是「快取＋刷新」的快速路徑（不需人工操作）；
+    右側是完整的瀏覽器重新授權路徑，成功後憑證回寫 <code>token.pickle</code> 供下次使用。
+  </p>
+  </div>
+</section>
+
+<!-- ═══════════════ 5. 模組說明 ═══════════════ -->
+<section id="modules">
+  <h2><span class="no">05</span>模組詳細說明</h2>
+  <p class="lede">六個模組的職責、規模與關鍵實作重點。</p>
+  <div class="mods">
+    <div class="mod">
+      <h4><code>playlist_sorter.py</code><span class="role role-core">核心</span><span class="loc">348 行</span></h4>
+      <p><b>PlaylistSorter</b> 類別＋排程主程式。OAuth 認證（含刷新與失效自救）、分頁抓取、
+      本地排序（頻道 A→Z → 觀看數高→低）、逐位置搬移（跳過已正確者）、
+      指數退避重試（409/500/503）、軟上限熔斷。以 <code>schedule</code> 每日 16:05 執行。</p>
+    </div>
+    <div class="mod">
+      <h4><code>quota_manager.py</code><span class="role role-util">共用</span><span class="loc">36 行</span></h4>
+      <p><b>QuotaManager</b>：呼叫 API 前先 <code>consume(cost)</code> 預扣檢查，
+      超過軟上限 8,000 即拋 <code>QuotaSoftLimitExceeded</code>。
+      純記憶體計數（不跨程序、不持久化）。</p>
+    </div>
+    <div class="mod">
+      <h4><code>log_utils.py</code><span class="role role-util">共用</span><span class="loc">40 行</span></h4>
+      <p><b>ColoredFormatter</b>：依 log level 上 ANSI 色（紫/紅/黃/綠/青），
+      輸出至 console。全專案共用同一個 module-level <code>logger</code>（DEBUG 級）。</p>
+    </div>
+    <div class="mod">
+      <h4><code>main.py</code><span class="role role-tool">工具</span><span class="loc">147 行</span></h4>
+      <p><b>YouTubeAPIHandler</b>：建構時即以 API Key 全量載入指定清單，
+      提供 <code>search_keyword_in_song_list()</code> 關鍵字搜尋（比對歌名＋頻道、
+      結果每段 ≤1,900 字元）。另含未使用的舊版 OAuth 方法。PyInstaller 打包目標。</p>
+    </div>
+    <div class="mod">
+      <h4><code>check_duplicate.py</code><span class="role role-tool">工具</span><span class="loc">144 行</span></h4>
+      <p><b>YouTubeDuplicateFinder</b>：抓取整份清單後以 O(n²) 標題「子字串互含」比對分組，
+      每組依觀看數排序並輸出「👑 保留／❌ 刪除」建議報告。僅供人工判斷，不自動刪除。</p>
+    </div>
+    <div class="mod">
+      <h4><code>search.py</code><span class="role role-tool">工具</span><span class="loc">50 行</span></h4>
+      <p><b>YouTubeSearchHandler</b>：以 <code>requests</code> 直接呼叫
+      <code>search.list</code> REST 端點，限定近 180 天、strict 安全搜尋，
+      可調結果數與排序方式。注意：每次呼叫成本高達 100 units。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 6. 配額分析 ═══════════════ -->
+<section id="quota">
+  <h2><span class="no">06</span>API 配額成本分析</h2>
+  <p class="lede">
+    YouTube Data API 免費配額為每日 10,000 units（太平洋時間午夜重置）。
+    各操作成本落差極大——「搬移一首歌」等於「讀 50 頁清單」的成本，
+    這正是整個配額管理設計存在的原因。
+  </p>
+
+  <div class="card bars">
+    <p class="bar-title">單次 API 呼叫的配額成本</p>
+    <p class="bar-sub">單位：quota units・線性刻度（0–100）</p>
+    <div class="bar-row">
+      <span class="bar-label">playlistItems.list</span>
+      <span class="bar-track bar-axis"><span class="bar-fill" style="width:1%" title="playlistItems.list：1 unit"></span><span class="bar-val">1</span></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">videos.list</span>
+      <span class="bar-track bar-axis"><span class="bar-fill" style="width:1%" title="videos.list：1 unit"></span><span class="bar-val">1</span></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">playlistItems.update</span>
+      <span class="bar-track bar-axis"><span class="bar-fill" style="width:50%" title="playlistItems.update：50 units"></span><span class="bar-val">50</span></span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-label">search.list</span>
+      <span class="bar-track bar-axis"><span class="bar-fill" style="width:100%" title="search.list：100 units"></span><span class="bar-val">100 units</span></span>
+    </div>
+    <p class="bar-note">讀取類操作幾乎免費；寫入（update）與搜尋（search）是唯二的高價操作。</p>
+  </div>
+
+  <div class="card cap">
+    <p class="bar-title">每日 10,000 units 的分配策略</p>
+    <div class="cap-band">
+      <div class="cap-soft" title="0–8,000：排序作業可用"></div>
+      <div class="cap-buffer" title="8,000–10,000：保留緩衝"></div>
+    </div>
+    <div class="cap-labels"><span>0</span><span>8,000（軟上限）</span><span>10,000（硬上限）</span></div>
+    <div class="cap-legend">
+      <span><span class="sw" style="background:var(--series-1)"></span>排序作業可用（≈ 最多搬移 160 首/日）</span>
+      <span><span class="sw" style="background:var(--grid)"></span>保留緩衝 2,000 units（其他用途／安全邊際）</span>
+    </div>
+  </div>
+
+  <h3>成本一覽表</h3>
+  <div class="tblwrap">
+  <table>
+    <thead><tr><th>API 操作</th><th class="num">成本（units）</th><th>專案內用途</th><th>使用端</th></tr></thead>
+    <tbody>
+      <tr><td><code>playlistItems.list</code></td><td class="num">1</td><td>分頁抓取清單內容（每頁 50 筆）</td><td>sorter・main・duplicate</td></tr>
+      <tr><td><code>videos.list</code></td><td class="num">1</td><td>批次抓取觀看數／頻道（每批 50 部）</td><td>sorter・main・duplicate</td></tr>
+      <tr><td><code>playlistItems.update</code></td><td class="num">50</td><td>搬移一首歌到指定位置</td><td>sorter</td></tr>
+      <tr><td><code>search.list</code></td><td class="num">100</td><td>關鍵字搜尋近 180 天影片</td><td>search</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout">
+    <h4>💡 情境試算：1,085 首的「YTMusic」大清單</h4>
+    <ul>
+      <li><b>純讀取</b>（抓清單＋詳情）：約 22 頁 × 1 ＋ 22 批 × 1 ≈ <b>44 units</b> — 幾乎免費。</li>
+      <li><b>最壞情況全部搬移</b>：1,085 × 50 = <b>54,250 units</b> — 超過 5 天的總配額。</li>
+      <li>因此首次排序需靠「每日 160 首」分多天收斂；<b>收斂後</b>每天只需付出讀取成本＋少量新增曲目的搬移費用。</li>
+      <li>清單「由小到大」處理的順序設計，確保配額斷炊前小清單能全部完成。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ═══════════════ 7. 問題與優化建議 ═══════════════ -->
+<section id="findings">
+  <h2><span class="no">07</span>問題盤點與優化建議</h2>
+  <p class="lede">
+    共 24 項發現，依「安全性 → 正確性 → 架構 → 效能 → 可維運性」五類整理，
+    嚴重度以標籤標示。所有項目皆為靜態研讀結果，未實際執行程式驗證。
+  </p>
+
+  <div class="callout warn">
+    <h4>⚡ 最優先處理 Top 5</h4>
+    <ol>
+      <li><b>輪替並外部化 API Key</b> — 金鑰已明碼存於三個檔案，應視同外洩處理（項目 1）。</li>
+      <li><b>建立版本控制＋.gitignore</b> — 先排除憑證檔再 <code>git init</code>（項目 2）。</li>
+      <li><b>抽出共用 YouTube client</b> — 消除三份重複的抓取邏輯（項目 10）。</li>
+      <li><b>以 LIS 演算法最小化搬移次數</b> — 大清單首次排序可省下數千 units（項目 15）。</li>
+      <li><b>配額用量持久化</b> — 避免同日重啟後計數歸零而實際超額（項目 16）。</li>
+    </ol>
+  </div>
+
+  <!-- 安全性 -->
+  <div class="cat">
+    <div class="cat-head"><h3>安全性</h3><span class="sev sev-crit">高風險</span></div>
+    <ol class="findings">
+      <li>
+        <b>API Key 明碼寫死，且同一把金鑰重複出現在三個檔案</b>
+        <div class="d"><code>main.py:14</code>、<code>check_duplicate.py:127</code>、<code>search.py:8</code>。
+        任何拿到原始碼的人都能盜用你的每日配額。</div>
+        <div class="fix">改由環境變數（<code>YOUTUBE_API_KEY</code>）或 <code>.env</code> 讀取；
+        到 Google Cloud Console 輪替金鑰，並設定「API 限制」只允許 YouTube Data API。</div>
+      </li>
+      <li>
+        <b>憑證檔裸放於專案根目錄，且專案未納入版本控制、沒有 .gitignore</b>
+        <div class="d"><code>client_secret.json</code> 與 <code>token.pickle</code> 等同帳號操作權。
+        未來一旦 <code>git init</code> ＋ push，極易連同憑證一起外洩。</div>
+        <div class="fix">先建立 <code>.gitignore</code>（排除 <code>client_secret.json</code>、<code>token.pickle</code>、
+        <code>.venv/</code>、<code>build/</code>、<code>dist/</code>、<code>__pycache__/</code>）再初始化 git。</div>
+      </li>
+      <li>
+        <b>OAuth 憑證以 pickle 序列化儲存</b>
+        <div class="d">pickle 反序列化來路不明的檔案可執行任意程式碼；Google 官方範例已改用 JSON。</div>
+        <div class="fix">改用 <code>credentials.to_json()</code> 儲存、
+        <code>Credentials.from_authorized_user_file()</code> 載入。</div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- 正確性 -->
+  <div class="cat">
+    <div class="cat-head"><h3>正確性與錯誤處理</h3><span class="sev sev-high">中高</span></div>
+    <ol class="findings" start="4">
+      <li>
+        <b>OAuth 參數拼字錯誤，實際無效</b>
+        <div class="d"><code>main.py:87</code> 的 <code>authorizartion_prompt_message</code>（多了 r），
+        被 <code>run_local_server()</code> 的 <code>**kwargs</code> 靜默吞掉，設定從未生效。</div>
+        <div class="fix">更正為 <code>authorization_prompt_message</code>（<code>playlist_sorter.py:76</code> 的寫法是正確的）。</div>
+      </li>
+      <li>
+        <b>連續兩次 sort，第一次幾乎被覆蓋；且兩工具排序規則不一致</b>
+        <div class="d"><code>main.py:55-56</code> 先依觀看數排序再依（頻道, 標題）排序——
+        因 sort 穩定性，前者只剩「同頻道同標題」時的 tie-break 作用，意圖不明。
+        且與 <code>playlist_sorter.py:270</code> 的排序鍵（頻道, −觀看數）不同，兩工具產出的順序不一致。</div>
+        <div class="fix">統一為單次 sort、明確的複合 key，並抽成兩者共用的排序函式。</div>
+      </li>
+      <li>
+        <b>bare except 靜默吞錯</b>
+        <div class="d"><code>playlist_sorter.py:69</code> 刪除舊 token 失敗時 <code>except: pass</code>，
+        連 <code>KeyboardInterrupt</code> 都會被吞掉。</div>
+        <div class="fix">至少改為 <code>except OSError</code> 並記 log。</div>
+      </li>
+      <li>
+        <b>API part 參數含多餘空格</b>
+        <div class="d"><code>main.py:96</code> 的 <code>part="status, contentDetails"</code>（逗號後有空格），
+        依賴 Google 端寬鬆解析。</div>
+        <div class="fix">改為 <code>"status,contentDetails"</code>。</div>
+      </li>
+      <li>
+        <b>缺少防呆：統計資料不存在時會直接 KeyError</b>
+        <div class="d"><code>main.py:39</code> 直接取 <code>item["statistics"]["viewCount"]</code>，
+        遇到隱藏觀看數／已下架影片會整支炸掉（<code>check_duplicate.py:35</code> 反而有做防呆）；
+        另外 <code>main.py</code> 也未處理「頁面內全是失效影片、<code>vid_ids</code> 為空」的情境。</div>
+        <div class="fix">比照 <code>check_duplicate.py</code> 用 <code>.get()</code> 加預設值，空清單先跳過。</div>
+      </li>
+      <li>
+        <b>HTTP 請求無 timeout、無錯誤處理；使用已棄用的 utcnow()</b>
+        <div class="d"><code>search.py:17</code> 的 <code>requests.get()</code> 沒有 timeout（可能永久卡死）
+        也沒檢查狀態碼；<code>search.py:36</code> 的 <code>datetime.utcnow()</code> 在 Python 3.12+ 已棄用。</div>
+        <div class="fix">加 <code>timeout=10</code> 與 <code>raise_for_status()</code>；
+        改用 <code>datetime.now(timezone.utc)</code>。</div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- 架構 -->
+  <div class="cat">
+    <div class="cat-head"><h3>架構與重複程式碼</h3><span class="sev sev-med">中</span></div>
+    <ol class="findings" start="10">
+      <li>
+        <b>「分頁抓清單＋批次抓詳情」邏輯重複實作了三份</b>
+        <div class="d"><code>main.py</code>、<code>check_duplicate.py</code>、<code>playlist_sorter.py</code>
+        各自維護幾乎相同的抓取迴圈，改一處要改三處。</div>
+        <div class="fix">抽出共用 <code>youtube_client.py</code>（認證＋抓取＋分頁），三個工具改為呼叫端。</div>
+      </li>
+      <li>
+        <b>設定值硬編碼且散落各檔</b>
+        <div class="d">播放清單 ID（13 組寫死在 <code>playlist_sorter.py:297-311</code>、
+        其他檔案又各有一份）、排程時間 16:05、軟硬上限、port 8080 等均為 magic value。</div>
+        <div class="fix">集中到 <code>config.toml</code>／<code>.env</code>，或以 CLI 參數（argparse）傳入。</div>
+      </li>
+      <li>
+        <b>建構子內執行全量網路 I/O</b>
+        <div class="d"><code>main.py:10</code> 的 <code>YouTubeAPIHandler.__init__</code>
+        直接抓完整份清單（千首等級），物件無法在不打 API 的情況下建立，難以測試。</div>
+        <div class="fix">改為顯式的 <code>load()</code> 方法或 lazy property。</div>
+      </li>
+      <li>
+        <b>死碼殘留</b>
+        <div class="d"><code>playlist_sorter.py:87-113</code> 整段註解掉的舊版 <code>_authenticate()</code>（27 行）；
+        <code>main.py:42</code> 一行無作用的孤立字串常值；多處註解掉的舊 playlist ID 與測試碼。</div>
+        <div class="fix">刪除（納入版本控制後歷史自然可查）。</div>
+      </li>
+      <li>
+        <b>依賴定義三處不同步</b>
+        <div class="d"><code>pyproject.toml</code>／<code>poetry.lock</code>（2025-11）與
+        <code>requirements.txt</code>（2024-02）版本快照不一致；
+        <code>search.py</code> 直接 import 的 <code>requests</code> 未宣告於 <code>pyproject.toml</code>（僅靠間接依賴帶入）。</div>
+        <div class="fix">以 Poetry 為唯一來源，<code>requests</code> 明確宣告，
+        <code>requirements.txt</code> 改由 <code>poetry export</code> 定期重新產生。</div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- 效能 -->
+  <div class="cat">
+    <div class="cat-head"><h3>效能與配額效率</h3><span class="sev sev-med">中</span></div>
+    <ol class="findings" start="15">
+      <li>
+        <b>搬移策略非最優：最壞需 O(n) 次 update</b>
+        <div class="d">目前採「逐位置對齊」，理論上限為每首歌一次 update。
+        1,085 首清單最壞 54,250 units（5.4 天配額）。
+        其實只需搬移「不在最長遞增子序列（LIS）中」的元素即可達成排序，
+        對「大致已排序」的清單可將搬移次數降到接近實際亂序數。</div>
+        <div class="fix">以 LIS 計算最小搬移集合，再依序 update；每日可完成的清單數會顯著提升。</div>
+      </li>
+      <li>
+        <b>配額計數不持久化，重啟即歸零</b>
+        <div class="d"><code>QuotaManager</code> 只存在記憶體。同一天內程式重跑（手動＋排程各一次、或當機重啟）
+        會從 0 重新計數，實際用量可能早已超過軟上限而不自知。</div>
+        <div class="fix">將每日用量寫入本地檔案（含太平洋時區的日期戳），啟動時載入接續計數。</div>
+      </li>
+      <li>
+        <b>重複偵測為 O(n²) 且無標題正規化</b>
+        <div class="d"><code>check_duplicate.py:71-100</code> 雙層迴圈子字串比對；
+        「Official MV」「【】」「feat.」等雜訊會讓真重複比不出來、假重複被誤抓。</div>
+        <div class="fix">比對前先正規化（去括號註記、全形轉半形、去常見尾綴），
+        或改用 <code>rapidfuzz</code> 相似度；千首等級 O(n²) 尚可接受，正規化的效益更大。</div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- 可維運性 -->
+  <div class="cat">
+    <div class="cat-head"><h3>可維運性</h3><span class="sev sev-low">低</span></div>
+    <ol class="findings" start="18">
+      <li>
+        <b>沒有任何測試與 CI</b>
+        <div class="d">排序鍵、分段邏輯、QuotaManager 熔斷等純邏輯其實非常好測。</div>
+        <div class="fix">先為 <code>QuotaManager</code>、排序 key、<code>__generate_song_list_response()</code>
+        補單元測試（不需真的打 API）。</div>
+      </li>
+      <li>
+        <b>日誌只輸出 console，長駐排程無法回溯</b>
+        <div class="d">腳本設計為 24 小時待命，但當機或誤動作後沒有檔案日誌可查。</div>
+        <div class="fix">在 <code>log_utils.py</code> 加 <code>RotatingFileHandler</code>（檔案不上色、console 上色）。</div>
+      </li>
+      <li>
+        <b>Formatter 直接改寫 record.msg</b>
+        <div class="d"><code>log_utils.py:24</code> 就地修改 <code>record.msg</code>，
+        未來若掛第二個 handler（如檔案）會拿到已含 ANSI 碼或重複上色的訊息。</div>
+        <div class="fix">在 <code>format()</code> 內複製 record 或改以 <code>levelname</code> 包色。</div>
+      </li>
+      <li>
+        <b>「啟動即執行」的測試碼殘留在正式流程</b>
+        <div class="d"><code>playlist_sorter.py:342-343</code> 自註「為了測試，啟動時將立即執行一次」，
+        意味每次重啟腳本都會立刻消耗配額。</div>
+        <div class="fix">改為 CLI 旗標（如 <code>--run-now</code>）控制。</div>
+      </li>
+      <li>
+        <b>PyInstaller 打包目標已過時</b>
+        <div class="d"><code>main.spec</code> 打包的是 <code>main.py</code>，但主力功能已移往
+        <code>playlist_sorter.py</code>；<code>dist/main.exe</code> 為 2024-02 舊產物。</div>
+        <div class="fix">更新 spec 指向主力腳本，或移除不再使用的打包產物。</div>
+      </li>
+      <li>
+        <b>多處錯字</b>
+        <div class="d"><code>Credentialls</code>、<code>Resfreshing</code>（<code>main.py:70,76</code>）、
+        註解「包果」應為「包裹」（<code>playlist_sorter.py:50</code>）。</div>
+        <div class="fix">一併修正（其中拼字錯誤的參數名即項目 4）。</div>
+      </li>
+      <li>
+        <b>魔術數字 1900 無說明</b>
+        <div class="d"><code>main.py:124</code> 的訊息分段長度 1,900，推測是為 Discord 2,000 字元上限預留，
+        但沒有註解或常數名稱說明。</div>
+        <div class="fix">提為具名常數，如 <code>MESSAGE_CHUNK_LIMIT = 1900  # Discord 上限 2000 預留緩衝</code>。</div>
+      </li>
+      <li>
+        <b>雙底線 name mangling 當作 private 慣例</b>
+        <div class="d"><code>main.py</code> 的 <code>__sort_yt_playlist</code> 等方法使用雙底線，
+        觸發 Python name mangling，繼承與測試時徒增困擾。</div>
+        <div class="fix">依 PEP 8 慣例改用單底線 <code>_method</code>。</div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<footer>
+  <span>YouTube API 播放清單工具組 — 專案分析報告</span>
+  <span>由 Claude Code 靜態研讀產出・2026-07-13</span>
+</footer>
+
+</div>
+</body>
+</html>

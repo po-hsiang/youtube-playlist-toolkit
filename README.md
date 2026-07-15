@@ -1,0 +1,215 @@
+# YouTube API 播放清單工具組
+
+一組以 **YouTube Data API v3** 打造的個人播放清單自動化管理工具，核心功能是「將 YouTube 播放清單依照 *頻道名稱 → 觀看次數* 自動重新排序」，並附帶重複歌曲偵測、歌單關鍵字搜尋、影片搜尋等輔助工具。
+
+> 專案內建 **API 配額（Quota）管理機制**：每次 API 呼叫前先檢查累計成本，達到軟上限（8,000 units）即安全中止，避免把每日 10,000 units 的免費配額燒光。
+
+---
+
+## 功能總覽
+
+| 工具 | 模組 | 認證方式 | 功能 |
+|------|------|----------|------|
+| 🎯 播放清單自動排序 | `youtube_toolkit/playlist_sorter.py` | OAuth 2.0 | **主力工具**。每天定時（預設 16:05）將 13 個播放清單依「頻道 A→Z、觀看數高→低」排序，並實際寫回 YouTube |
+| 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 讀取整份播放清單後在本地搜尋歌名／頻道關鍵字，結果自動分段（≤1,900 字元／段） |
+| 👯 重複歌曲偵測 | `youtube_toolkit/duplicate_finder.py` | API Key | 以標題「子字串互相包含」比對找出疑似重複的歌，依觀看數排序建議保留哪一首 |
+| 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
+
+共用模組：
+
+| 模組 | 說明 |
+|------|------|
+| `youtube_toolkit/config.py` | **設定中心**：載入 `.env`、提供 API Key／憑證路徑／排程時間等所有設定 |
+| `youtube_toolkit/quota_manager.py` | API 配額計數器。軟上限 8,000 / 硬上限 10,000，超過軟上限拋出 `QuotaSoftLimitExceeded` |
+| `youtube_toolkit/log_utils.py` | ANSI 彩色 console logger（CRITICAL 紫 / ERROR 紅 / WARNING 黃 / INFO 綠 / DEBUG 青） |
+
+---
+
+## 專案結構
+
+```
+youtube_api/
+├── youtube_toolkit/            # 主套件（所有程式碼）
+│   ├── __init__.py
+│   ├── config.py               # 設定中心：.env 載入 + 全部可調參數
+│   ├── log_utils.py            # 彩色 logging
+│   ├── quota_manager.py        # API 配額管理（軟/硬上限）
+│   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
+│   ├── playlist_search.py      # 🔍 歌單載入 + 關鍵字搜尋
+│   ├── duplicate_finder.py     # 👯 重複歌曲偵測
+│   └── video_search.py         # 🌐 search.list API 包裝
+├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
+│   ├── client_secret.json      #    OAuth 用戶端密鑰
+│   └── token.pickle            #    OAuth 憑證快取（自動產生）
+├── docs/
+│   └── PROJECT_REPORT.html     # 專案分析報告（架構圖、流程圖、優化建議）
+├── .env                        # ⚠️ 機敏設定（已被 .gitignore 排除）
+├── .env.example                # .env 範本（可安全入版控）
+├── .gitignore
+├── playlist_search.spec        # PyInstaller 打包設定
+├── pyproject.toml              # 專案設定（PEP 621，由 uv 管理）
+├── .python-version             # uv 鎖定的 Python 版本（3.12）
+├── uv.lock                     # uv 依賴鎖定檔
+├── requirements.txt            # pip 備援依賴（由 uv export 產生）
+└── README.md
+```
+
+---
+
+## 環境需求與安裝
+
+- [uv](https://docs.astral.sh/uv/)（會自動下載並管理 Python 3.12，無須另行安裝 Python）
+- 主要依賴：`google-api-python-client`、`google-auth`、`google-auth-oauthlib`、`schedule`、`requests`
+
+### 使用 uv（推薦）
+
+```bash
+uv sync        # 自動建立 .venv、安裝 Python 3.12 與全部依賴
+```
+
+### 使用 pip（備援）
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+```
+
+---
+
+## 憑證與環境設定
+
+所有機敏資訊都放在 **`.env`** 與 **`secrets/`**，兩者皆被 `.gitignore` 排除、不會進版控。程式碼中沒有任何金鑰明碼。
+
+### 第一步：建立 .env
+
+```bash
+# 複製範本後填入實際值
+copy .env.example .env        # Windows
+```
+
+| 環境變數 | 必填 | 預設值 | 說明 |
+|----------|:---:|--------|------|
+| `YOUTUBE_API_KEY` | ✅ | — | YouTube Data API v3 金鑰 |
+| `CLIENT_SECRET_FILE` | | `secrets/client_secret.json` | OAuth 用戶端密鑰路徑 |
+| `TOKEN_FILE` | | `secrets/token.pickle` | OAuth 憑證快取路徑 |
+| `SCHEDULE_TIME` | | `16:05` | 每日排程時間（24 小時制） |
+| `YOUTUBE_DAILY_LIMIT` | | `10000` | 配額硬上限 |
+| `YOUTUBE_SOFT_LIMIT` | | `8000` | 配額軟上限（熔斷點） |
+| `OAUTH_PORT` | | `8080` | OAuth 本機回呼埠號 |
+
+> 讀取優先序：**既有環境變數 > `.env` 檔 > 程式預設值**。
+
+### 第二步（API Key）：唯讀工具用
+
+`playlist_search`、`duplicate_finder`、`video_search` 使用 API Key 讀取公開資料。
+
+1. 到 [Google Cloud Console](https://console.cloud.google.com/) 建立專案並啟用 **YouTube Data API v3**
+2. 建立 API 金鑰，並在「API 限制」中僅允許 YouTube Data API
+3. 填入 `.env` 的 `YOUTUBE_API_KEY`
+
+### 第三步（OAuth 2.0）：排序工具用
+
+`playlist_sorter` 需要**修改**你的播放清單，必須使用 OAuth 2.0（scope: `https://www.googleapis.com/auth/youtube`）。
+
+1. 在 Google Cloud Console 建立 **OAuth 用戶端 ID**（應用程式類型：電腦版應用程式）
+2. 下載 JSON 並存為 `secrets/client_secret.json`
+3. 首次執行時會自動開啟瀏覽器要求授權（本機 `port 8080` 回呼）
+4. 授權成功後憑證會快取到 `secrets/token.pickle`，之後自動載入／刷新；Refresh Token 失效時會自動刪除快取並重新走授權流程
+
+---
+
+## 使用方式
+
+所有工具都以 **模組方式** 從專案根目錄執行（或先 `uv sync` 後使用對應的指令）：
+
+| 工具 | 直接執行 | uv 指令 |
+|------|----------|---------|
+| 播放清單自動排序 | `uv run python -m youtube_toolkit.playlist_sorter` | `uv run yt-sort` |
+| 歌單關鍵字搜尋 | `uv run python -m youtube_toolkit.playlist_search` | `uv run yt-playlist-search` |
+| 重複歌曲偵測 | `uv run python -m youtube_toolkit.duplicate_finder` | `uv run yt-duplicates` |
+| 影片關鍵字搜尋 | `uv run python -m youtube_toolkit.video_search` | `uv run yt-video-search` |
+
+### 1. 播放清單自動排序（主力工具）
+
+執行後會：
+
+1. **立即執行一次**完整排序作業（測試用途的啟動即跑）
+2. 進入待命狀態，**每天 16:05**（可用 `SCHEDULE_TIME` 調整）自動再執行（`Ctrl+C` 結束）
+
+每次作業依序處理 13 個播放清單（**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
+
+```
+認證 → 分頁抓取清單項目 → 批次抓取影片詳情（50 部/批）
+     → 本地排序（頻道 A→Z、觀看數高→低）
+     → 逐位置比對：位置正確 → 跳過（0 quota）
+                    位置錯誤 → 呼叫 update 搬移（50 quota，最多重試 5 次、指數退避）
+     → 累計成本觸及軟上限 8,000 → 安全中止整個作業，保留剩餘配額
+```
+
+> 手動模式：直接建立 `PlaylistSorter` 並呼叫 `run(auto_run=False)`，會先顯示預估配額並要求輸入 `yes` 確認才寫入。
+
+### 2. 歌單關鍵字搜尋
+
+啟動時讀取整份指定播放清單（建構子內自動執行），列印全部歌曲後，可用 `search_keyword_in_song_list(keyword)` 搜尋（關鍵字需 ≥ 2 個字元，比對歌名與頻道名、不分大小寫）。
+
+### 3. 重複歌曲偵測
+
+輸出範例：
+
+```
+=== 發現 N 組疑似重複的歌曲 ===
+【第 1 組】
+  👑 保留? [12,345,678 觀看] 周杰倫 Jay Chou【七里香】Official MV
+  ❌ 刪除? [456,789 觀看] 七里香
+```
+
+比對邏輯：標題轉小寫去空白後，若 A 包含於 B 或 B 包含於 A 即視為同組；每組依觀看數由高到低排序，第一首建議保留。**僅產生報告，不會自動刪除任何影片。**
+
+### 4. 影片關鍵字搜尋
+
+搜尋近 180 天內的影片，可調整 `results_count`（預設 50）與 `search_order`（relevance / date / rating / title / viewCount）。注意每次呼叫消耗 **100 units**。
+
+---
+
+## API Quota 成本與保護機制
+
+YouTube Data API 免費配額為 **每日 10,000 units**（太平洋時間午夜重置），各操作成本差異極大：
+
+| API 操作 | 成本（units） | 使用場景 |
+|----------|:---:|----------|
+| `playlistItems.list` | 1 | 抓取清單內容（每頁 50 筆） |
+| `videos.list` | 1 | 批次抓影片詳情（每批 50 部） |
+| `playlistItems.update` | **50** | 搬移一首歌的位置 |
+| `search.list` | **100** | 關鍵字搜尋 |
+
+`QuotaManager` 的保護策略：
+
+- 每次呼叫 API 前先 `consume(cost)` 預扣並檢查
+- 累計即將超過**軟上限 8,000** → 拋出 `QuotaSoftLimitExceeded`，中止本日整個排序作業（保留 2,000 units 緩衝給其他用途）
+- API 回傳 `quotaExceeded`（硬上限）→ 立即停止，明日再試
+- 已在正確位置的歌曲直接跳過，**一首都不用搬時整份清單只花「讀取」的個位數 units**
+
+> 💡 換算：軟上限 8,000 units ≈ 每天最多搬移約 **160 首**歌的位置。千首等級的大清單第一次排序需要多天才能收斂，之後每日維護成本極低。
+
+---
+
+## 打包為 Windows 執行檔
+
+使用 PyInstaller 將歌單搜尋工具打包成單一執行檔：
+
+```bash
+uv run --with pyinstaller pyinstaller playlist_search.spec
+# 產物：dist/playlist_search.exe
+```
+
+> 部署時請將 `.env` 與 `secrets/` 目錄放在 exe **旁邊**（打包後程式會以執行檔所在目錄為根目錄尋找設定）。
+> 舊的 `dist/main.exe` 為重構前（2024-02）的產物，已過時。
+
+---
+
+## 安全性注意事項
+
+1. **`.env`、`secrets/client_secret.json`、`secrets/token.pickle` 為機敏檔案**，擁有它們等於能使用你的配額、操作你的 YouTube 帳號播放清單。三者皆已列入 `.gitignore`，請勿以任何形式上傳或分享。
+2. **API Key 曾以明碼存在於舊版原始碼中**，建議至 Google Cloud Console 輪替（Rotate）產生新金鑰後更新 `.env`，並對金鑰設定「API 限制」（僅允許 YouTube Data API）。
+3. `token.pickle` 使用 pickle 序列化，僅應載入自己產生的檔案；來路不明的 pickle 檔有任意程式碼執行風險。

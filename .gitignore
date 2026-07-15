@@ -1,0 +1,26 @@
+# ── 機敏資訊（絕對不可進版本控制）─────────────
+.env
+secrets/
+client_secret.json
+token.pickle
+token.json
+*.pickle
+HANDOFF.md
+
+# ── Python ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── 打包產物 ──────────────────────────────────
+build/
+dist/
+
+# ── IDE / 系統檔 ──────────────────────────────
+.idea/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
