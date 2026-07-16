@@ -1,52 +1,50 @@
-"""影片關鍵字搜尋工具：呼叫 search.list REST 端點（注意：每次 100 units）。
+"""影片關鍵字搜尋工具：search.list 包裝（注意：每次呼叫 100 units）。
 
-執行方式：python -m youtube_toolkit.video_search
+改用與其他工具相同的 googleapiclient（底層內建逾時與 HttpError 錯誤處理），
+並經 QuotaManager 記帳。執行方式：python -m youtube_toolkit.video_search
 """
 
-from datetime import datetime, timedelta
-import requests
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional, Tuple
 
-from youtube_toolkit import config
+from youtube_toolkit.youtube_client import YouTubeClient
+
+SEARCH_WINDOW_DAYS = 180  # 只搜尋近 N 天內發布的影片
+YOUTUBE_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class YouTubeSearchHandler:
-    def __init__(self):
-        self.API_KEY = config.require_api_key()
-        self.API_URL = "https://www.googleapis.com/youtube/v3/search"
+    def __init__(self, client: Optional[YouTubeClient] = None):
+        self.client = client or YouTubeClient.for_public_data()
 
-    def search_by_keyword(self, keyword, results_count=50, search_order="relevance"):
-        search_params = self._build_search_params(keyword, results_count, search_order)
-        search_results = self._get_data_by_api(search_params)
-        return search_results
+    def search_by_keyword(
+        self, keyword: str, results_count: int = 50, search_order: str = "relevance"
+    ) -> Dict[str, Any]:
+        """搜尋近 SEARCH_WINDOW_DAYS 天內的影片。
 
-    def _get_data_by_api(self, params):
-        response = requests.get(self.API_URL, params=params)
-        return response.json()
-
-    def _build_search_params(self, keyword, results_count, search_order):
-        # search_order: relevance, date, rating, title, viewCount
-        published_after, published_before = self._get_time_period_for_youtube(180)
-        return {
-            "key": self.API_KEY,
-            "q": keyword,
-            "part": "snippet",
-            "maxResults": results_count,
-            "type": "video",
-            "order": search_order,
-            "publishedAfter": published_after,
-            "publishedBefore": published_before,
-            "safeSearch": "strict",
-        }
-
-    def _get_time_period_for_youtube(self, days_ago):
-        current_time = datetime.utcnow()
-        n_days_ago = current_time - timedelta(days=days_ago)
-        published_after = n_days_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
-        published_before = current_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        return published_after, published_before
+        search_order 可用：relevance / date / rating / title / viewCount。
+        """
+        published_after, published_before = _time_window(days=SEARCH_WINDOW_DAYS)
+        return self.client.search_videos(
+            part="snippet",
+            q=keyword,
+            maxResults=results_count,
+            type="video",
+            order=search_order,
+            publishedAfter=published_after,
+            publishedBefore=published_before,
+            safeSearch="strict",
+        )
 
 
-def main():
+def _time_window(days: int) -> Tuple[str, str]:
+    """回傳 (published_after, published_before)，YouTube API 要求的 UTC RFC3339 格式。"""
+    now = datetime.now(timezone.utc)
+    n_days_ago = now - timedelta(days=days)
+    return n_days_ago.strftime(YOUTUBE_TIME_FORMAT), now.strftime(YOUTUBE_TIME_FORMAT)
+
+
+def main() -> None:
     youtube_search = YouTubeSearchHandler()
     result = youtube_search.search_by_keyword("羅傑")
     print(f"result: {result}\n")

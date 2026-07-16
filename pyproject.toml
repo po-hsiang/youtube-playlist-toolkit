@@ -1,6 +1,6 @@
 [project]
 name = "youtube_api"
-version = "0.2.0"
+version = "0.3.0"
 description = "YouTube 播放清單自動化工具組：自動排序、重複偵測、關鍵字搜尋"
 authors = [{ name = "po-hsiang", email = "wsxxcv11733@gmail.com" }]
 requires-python = ">=3.12"

@@ -40,7 +40,7 @@ YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 
 # ── 憑證檔路徑（可用環境變數覆寫；相對路徑以專案根目錄為基準）──
 CLIENT_SECRET_FILE = BASE_DIR / os.environ.get("CLIENT_SECRET_FILE", "secrets/client_secret.json")
-TOKEN_FILE = BASE_DIR / os.environ.get("TOKEN_FILE", "secrets/token.pickle")
+TOKEN_FILE = BASE_DIR / os.environ.get("TOKEN_FILE", "secrets/token.json")
 
 # ── 一般設定（可用環境變數覆寫）────────────────
 SCHEDULE_TIME = os.environ.get("SCHEDULE_TIME", "16:05")

@@ -20,6 +20,9 @@
 | 模組 | 說明 |
 |------|------|
 | `youtube_toolkit/config.py` | **設定中心**：載入 `.env`、提供 API Key／憑證路徑／排程時間等所有設定 |
+| `youtube_toolkit/auth.py` | **認證中心**：API Key 服務與 OAuth 2.0 憑證（JSON 快取，不使用 pickle） |
+| `youtube_toolkit/youtube_client.py` | **共用資料存取層**：分頁抓清單、批次抓詳情、搬移、搜尋，全部經配額記帳 |
+| `youtube_toolkit/sorting.py` | **LIS 搬移計畫**：純函式計算最少搬移次數（可獨立單元測試） |
 | `youtube_toolkit/quota_manager.py` | API 配額計數器。軟上限 8,000 / 硬上限 10,000，超過軟上限拋出 `QuotaSoftLimitExceeded` |
 | `youtube_toolkit/log_utils.py` | ANSI 彩色 console logger（CRITICAL 紫 / ERROR 紅 / WARNING 黃 / INFO 綠 / DEBUG 青） |
 
@@ -32,15 +35,21 @@ youtube_api/
 ├── youtube_toolkit/            # 主套件（所有程式碼）
 │   ├── __init__.py
 │   ├── config.py               # 設定中心：.env 載入 + 全部可調參數
+│   ├── auth.py                 # 認證中心：API Key / OAuth（JSON 憑證快取）
+│   ├── youtube_client.py       # 共用資料存取層（帶配額記帳）
+│   ├── sorting.py              # LIS 最少搬移計畫（純函式）
 │   ├── log_utils.py            # 彩色 logging
 │   ├── quota_manager.py        # API 配額管理（軟/硬上限）
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
 │   ├── playlist_search.py      # 🔍 歌單載入 + 關鍵字搜尋
 │   ├── duplicate_finder.py     # 👯 重複歌曲偵測
 │   └── video_search.py         # 🌐 search.list API 包裝
+├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
+│   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
+│   └── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
 ├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
 │   ├── client_secret.json      #    OAuth 用戶端密鑰
-│   └── token.pickle            #    OAuth 憑證快取（自動產生）
+│   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
 ├── docs/
 │   └── PROJECT_REPORT.html     # 專案分析報告（架構圖、流程圖、優化建議）
 ├── .env                        # ⚠️ 機敏設定（已被 .gitignore 排除）
@@ -92,7 +101,7 @@ copy .env.example .env        # Windows
 |----------|:---:|--------|------|
 | `YOUTUBE_API_KEY` | ✅ | — | YouTube Data API v3 金鑰 |
 | `CLIENT_SECRET_FILE` | | `secrets/client_secret.json` | OAuth 用戶端密鑰路徑 |
-| `TOKEN_FILE` | | `secrets/token.pickle` | OAuth 憑證快取路徑 |
+| `TOKEN_FILE` | | `secrets/token.json` | OAuth 憑證快取路徑（JSON 格式） |
 | `SCHEDULE_TIME` | | `16:05` | 每日排程時間（24 小時制） |
 | `YOUTUBE_DAILY_LIMIT` | | `10000` | 配額硬上限 |
 | `YOUTUBE_SOFT_LIMIT` | | `8000` | 配額軟上限（熔斷點） |
@@ -115,7 +124,8 @@ copy .env.example .env        # Windows
 1. 在 Google Cloud Console 建立 **OAuth 用戶端 ID**（應用程式類型：電腦版應用程式）
 2. 下載 JSON 並存為 `secrets/client_secret.json`
 3. 首次執行時會自動開啟瀏覽器要求授權（本機 `port 8080` 回呼）
-4. 授權成功後憑證會快取到 `secrets/token.pickle`，之後自動載入／刷新；Refresh Token 失效時會自動刪除快取並重新走授權流程
+4. 授權成功後憑證會以 **JSON 格式**快取到 `secrets/token.json`，之後自動載入／刷新；Refresh Token 失效時會自動重新走授權流程
+> 舊版的 `secrets/token.pickle`（pickle 格式）已停用；首次改版執行需重新授權一次，成功後舊檔可手動刪除。
 
 ---
 
@@ -140,14 +150,15 @@ copy .env.example .env        # Windows
 每次作業依序處理 13 個播放清單（**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
 
 ```
-認證 → 分頁抓取清單項目 → 批次抓取影片詳情（50 部/批）
+認證（13 份清單共用一次）→ 分頁抓取清單項目 → 批次抓取影片詳情（50 部/批）
      → 本地排序（頻道 A→Z、觀看數高→低）
-     → 逐位置比對：位置正確 → 跳過（0 quota）
-                    位置錯誤 → 呼叫 update 搬移（50 quota，最多重試 5 次、指數退避）
+     → LIS 搬移計畫：找出「相對順序已正確的最大子集」原地不動，
+        只搬其餘項目 → 搬移次數 = n - len(LIS)，為數學上的最少值
+     → 逐步執行搬移（每步 50 quota，暫時性錯誤最多重試 5 次、指數退避）
      → 累計成本觸及軟上限 8,000 → 安全中止整個作業，保留剩餘配額
 ```
 
-> 手動模式：直接建立 `PlaylistSorter` 並呼叫 `run(auto_run=False)`，會先顯示預估配額並要求輸入 `yes` 確認才寫入。
+> 手動模式：`PlaylistSorter(playlist_id, client=YouTubeClient.for_authorized_user())` 後呼叫 `run(auto_run=False)`，會先顯示 LIS 計算出的精確搬移數與預估配額，要求輸入 `yes` 確認才寫入。
 
 ### 2. 歌單關鍵字搜尋
 
@@ -185,12 +196,23 @@ YouTube Data API 免費配額為 **每日 10,000 units**（太平洋時間午夜
 
 `QuotaManager` 的保護策略：
 
-- 每次呼叫 API 前先 `consume(cost)` 預扣並檢查
+- **所有** API 呼叫（含搜尋）都經過共用的 `YouTubeClient`，呼叫前先 `consume(cost)` 預扣並檢查
 - 累計即將超過**軟上限 8,000** → 拋出 `QuotaSoftLimitExceeded`，中止本日整個排序作業（保留 2,000 units 緩衝給其他用途）
 - API 回傳 `quotaExceeded`（硬上限）→ 立即停止，明日再試
-- 已在正確位置的歌曲直接跳過，**一首都不用搬時整份清單只花「讀取」的個位數 units**
+- 排序採 **LIS 最少搬移計畫**：相對順序已正確的歌原地不動，**一首都不用搬時整份清單只花「讀取」的個位數 units**
 
 > 💡 換算：軟上限 8,000 units ≈ 每天最多搬移約 **160 首**歌的位置。千首等級的大清單第一次排序需要多天才能收斂，之後每日維護成本極低。
+
+---
+
+## 開發與測試
+
+單元測試使用標準庫 `unittest`（無額外依賴），覆蓋 LIS 搬移計畫的數學正確性、
+分頁／防呆邏輯與配額記帳（以假 service 隔離網路）：
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
 
 ---
 
@@ -210,6 +232,6 @@ uv run --with pyinstaller pyinstaller playlist_search.spec
 
 ## 安全性注意事項
 
-1. **`.env`、`secrets/client_secret.json`、`secrets/token.pickle` 為機敏檔案**，擁有它們等於能使用你的配額、操作你的 YouTube 帳號播放清單。三者皆已列入 `.gitignore`，請勿以任何形式上傳或分享。
+1. **`.env`、`secrets/client_secret.json`、`secrets/token.json` 為機敏檔案**，擁有它們等於能使用你的配額、操作你的 YouTube 帳號播放清單。三者皆已列入 `.gitignore`，請勿以任何形式上傳或分享。
 2. **API Key 曾以明碼存在於舊版原始碼中**，建議至 Google Cloud Console 輪替（Rotate）產生新金鑰後更新 `.env`，並對金鑰設定「API 限制」（僅允許 YouTube Data API）。
-3. `token.pickle` 使用 pickle 序列化，僅應載入自己產生的檔案；來路不明的 pickle 檔有任意程式碼執行風險。
+3. OAuth 憑證快取自 v0.3.0 起改用 **JSON 格式**（google-auth 官方作法），不再使用 pickle，消除反序列化執行任意程式碼的風險。
