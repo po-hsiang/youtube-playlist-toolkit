@@ -1,0 +1,43 @@
+# 播放清單設定：所有工具共用，改這裡即可、不用動程式碼。
+# - 換搜尋／重複偵測的目標清單：改對應區段的 target 字串（名稱須存在於 [playlists]）
+# - 調整每日排序的清單集合與順序：改 [sorter].order（建議由小到大，配額耗盡前小清單先完成）
+
+[playlists]
+"Live" = "PLLUffVVIYEV_8vV5tNnViOQaNhDrrbcr9"
+"Covers (Chinese)" = "PLLUffVVIYEV8cdnk8mseZz8As7Pljs7nm"
+"Other Languages Songs" = "PLLUffVVIYEV8eyriNIjptSXg__6RB1ltx"
+"Song of Combination" = "PLEA4152F16A0C1ACC"
+"Covers (English)" = "PLLUffVVIYEV-QmbB7ZvRvM4zA4OJepmXd"
+"Musical Instruments" = "PL21C891F13DFB9C25"
+"KTV" = "PLLUffVVIYEV947ZHP92M-PVEKpdJtgU06"
+"English" = "PLLUffVVIYEV_RlQHzEqBUa1jFlAW9FzDN"
+"Japanese" = "PLLUffVVIYEV-EtG7w59dxNxHIE_GzMRS0"
+"Chinese" = "PLLUffVVIYEV9wvxjcqMEbuojSiMqvwGNA"
+"Covers (Japanese)" = "PLLUffVVIYEV-NE2WtmUva-rw4R3t3UBA1"
+"BGM / OST" = "PLLUffVVIYEV_eoZzUyq6z2pAumBCbYwit"
+"YTMusic" = "PLLUffVVIYEV8J2P4Tp-rkEYZEtMHHkm7o"
+"大合刷" = "PLLUffVVIYEV80h2q5Q2b5oUfowXxYAwxo"  # 私人清單，API Key 工具讀不到
+
+[sorter]
+# 每日自動排序的清單與處理順序
+order = [
+    "Live",
+    "Covers (Chinese)",
+    "Other Languages Songs",
+    "Song of Combination",
+    "Covers (English)",
+    "Musical Instruments",
+    "KTV",
+    "English",
+    "Japanese",
+    "Chinese",
+    "Covers (Japanese)",
+    "BGM / OST",
+    "YTMusic",
+]
+
+[playlist_search]
+target = "YTMusic"
+
+[duplicate_finder]
+target = "YTMusic"

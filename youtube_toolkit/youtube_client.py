@@ -37,7 +37,9 @@ class YouTubeClient:
     def __init__(self, service: Resource, quota_manager: Optional[QuotaManager] = None):
         self._service = service
         self.quota_manager = quota_manager or QuotaManager(
-            daily_limit=config.YOUTUBE_DAILY_LIMIT, soft_limit=config.YOUTUBE_SOFT_LIMIT
+            daily_limit=config.YOUTUBE_DAILY_LIMIT,
+            soft_limit=config.YOUTUBE_SOFT_LIMIT,
+            state_file=config.QUOTA_STATE_FILE,  # 跨程序共用計數：全部工具合併記帳
         )
 
     @classmethod

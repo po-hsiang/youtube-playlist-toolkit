@@ -20,6 +20,7 @@
 | 模組 | 說明 |
 |------|------|
 | `youtube_toolkit/config.py` | **設定中心**：載入 `.env`、提供 API Key／憑證路徑／排程時間等所有設定 |
+| `youtube_toolkit/playlists.py` | **播放清單設定載入器**：讀取根目錄 `playlists.toml`，清單名稱→ID 一處管理 |
 | `youtube_toolkit/auth.py` | **認證中心**：API Key 服務與 OAuth 2.0 憑證（JSON 快取，不使用 pickle） |
 | `youtube_toolkit/youtube_client.py` | **共用資料存取層**：分頁抓清單、批次抓詳情、搬移、搜尋，全部經配額記帳 |
 | `youtube_toolkit/sorting.py` | **LIS 搬移計畫**：純函式計算最少搬移次數（可獨立單元測試） |
@@ -35,6 +36,7 @@ youtube_api/
 ├── youtube_toolkit/            # 主套件（所有程式碼）
 │   ├── __init__.py
 │   ├── config.py               # 設定中心：.env 載入 + 全部可調參數
+│   ├── playlists.py            # playlists.toml 載入器（清單名稱→ID）
 │   ├── auth.py                 # 認證中心：API Key / OAuth（JSON 憑證快取）
 │   ├── youtube_client.py       # 共用資料存取層（帶配額記帳）
 │   ├── sorting.py              # LIS 最少搬移計畫（純函式）
@@ -46,12 +48,20 @@ youtube_api/
 │   └── video_search.py         # 🌐 search.list API 包裝
 ├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
 │   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
-│   └── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
+│   ├── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
+│   ├── test_playlist_sorter.py #    搬移執行、重試、熔斷（假 client）
+│   ├── test_quota_manager.py   #    配額持久化、換日歸零、壞檔容錯
+│   ├── test_playlists.py       #    playlists.toml 載入與驗證
+│   ├── test_duplicate_finder.py#    標題正規化與分組
+│   └── test_log_utils.py       #    上色不污染檔案日誌
 ├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
 │   ├── client_secret.json      #    OAuth 用戶端密鑰
 │   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
 ├── docs/
 │   └── PROJECT_REPORT.html     # 專案分析報告（架構圖、流程圖、優化建議）
+├── playlists.toml              # 📋 播放清單設定：名稱→ID、排序順序、各工具目標
+├── quota_state.json            # 配額計數狀態（自動產生，gitignored）
+├── logs/                       # 輪替檔案日誌（自動產生，gitignored）
 ├── .env                        # ⚠️ 機敏設定（已被 .gitignore 排除）
 ├── .env.example                # .env 範本（可安全入版控）
 ├── .gitignore
@@ -131,6 +141,9 @@ copy .env.example .env        # Windows
 
 ## 使用方式
 
+**目標清單與排序集合統一設定於 [`playlists.toml`](playlists.toml)**——換工具的目標清單改對應區段的
+`target` 字串、調整每日排序的集合／順序改 `[sorter].order`，不用動任何程式碼。
+
 所有工具都以 **模組方式** 從專案根目錄執行（或先 `uv sync` 後使用對應的指令）：
 
 | 工具 | 直接執行 | uv 指令 |
@@ -147,7 +160,7 @@ copy .env.example .env        # Windows
 1. **立即執行一次**完整排序作業（測試用途的啟動即跑）
 2. 進入待命狀態，**每天 16:05**（可用 `SCHEDULE_TIME` 調整）自動再執行（`Ctrl+C` 結束）
 
-每次作業依序處理 13 個播放清單（**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
+每次作業依序處理 `playlists.toml` 中 `[sorter].order` 設定的清單（建議**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
 
 ```
 認證（13 份清單共用一次）→ 分頁抓取清單項目 → 批次抓取影片詳情（50 部/批）
@@ -175,7 +188,10 @@ copy .env.example .env        # Windows
   ❌ 刪除? [456,789 觀看] 七里香
 ```
 
-比對邏輯：標題轉小寫去空白後，若 A 包含於 B 或 B 包含於 A 即視為同組；每組依觀看數由高到低排序，第一首建議保留。**僅產生報告，不會自動刪除任何影片。**
+比對邏輯：標題先**正規化**——小寫、括號符號移除（**內容保留**，「【七里香】」的歌名還在）、去除
+Official MV／Lyric Video／官方完整版／feat. 等宣傳雜訊、壓縮空白——之後互為子字串即視為同組
+（`live`／`cover` 等有語意的詞不移除，現場版不會和原版誤判成重複）。每組依觀看數由高到低排序，
+第一首建議保留。**僅產生報告，不會自動刪除任何影片。**
 
 ### 4. 影片關鍵字搜尋
 
@@ -197,6 +213,7 @@ YouTube Data API 免費配額為 **每日 10,000 units**（太平洋時間午夜
 `QuotaManager` 的保護策略：
 
 - **所有** API 呼叫（含搜尋）都經過共用的 `YouTubeClient`，呼叫前先 `consume(cost)` 預扣並檢查
+- 計數**持久化**於 `quota_state.json`：同一配額日（太平洋時間，即 YouTube 的重置基準）內重啟程式**不歸零**，且所有工具共用同一份計數、合併記帳
 - 累計即將超過**軟上限 8,000** → 拋出 `QuotaSoftLimitExceeded`，中止本日整個排序作業（保留 2,000 units 緩衝給其他用途）
 - API 回傳 `quotaExceeded`（硬上限）→ 立即停止，明日再試
 - 排序採 **LIS 最少搬移計畫**：相對順序已正確的歌原地不動，**一首都不用搬時整份清單只花「讀取」的個位數 units**
@@ -208,7 +225,8 @@ YouTube Data API 免費配額為 **每日 10,000 units**（太平洋時間午夜
 ## 開發與測試
 
 單元測試使用標準庫 `unittest`（無額外依賴），覆蓋 LIS 搬移計畫的數學正確性、
-分頁／防呆邏輯與配額記帳（以假 service 隔離網路）：
+分頁／防呆邏輯、配額記帳與持久化、排序器重試／熔斷、標題正規化與日誌格式
+（以假 service／假 client 隔離網路）：
 
 ```bash
 uv run python -m unittest discover -s tests -v

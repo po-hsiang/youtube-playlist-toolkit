@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 import schedule
 from googleapiclient.errors import HttpError
 
-from youtube_toolkit import config
+from youtube_toolkit import config, playlists
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.quota_manager import QuotaManager, QuotaSoftLimitExceeded
 from youtube_toolkit.sorting import Move, plan_minimal_moves
@@ -136,29 +136,22 @@ class PlaylistSorter:
 def job_execute_sort() -> None:
     logger.info("排程作業啟動：開始執行播放清單排序...")
 
-    quota_manager = QuotaManager(daily_limit=config.YOUTUBE_DAILY_LIMIT, soft_limit=config.YOUTUBE_SOFT_LIMIT)
     try:
-        client = YouTubeClient.for_authorized_user(quota_manager)  # 13 份清單共用同一次認證
+        playlists_to_sort = playlists.sorter_playlists()  # 清單與順序設定於 playlists.toml
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(f"[設定錯誤] {e}")
+        return
+
+    quota_manager = QuotaManager(
+        daily_limit=config.YOUTUBE_DAILY_LIMIT,
+        soft_limit=config.YOUTUBE_SOFT_LIMIT,
+        state_file=config.QUOTA_STATE_FILE,  # 同配額日內重啟不歸零
+    )
+    try:
+        client = YouTubeClient.for_authorized_user(quota_manager)  # 全部清單共用同一次認證
     except Exception as e:
         logger.error(f"[認證失敗] 無法建立 YouTube 服務：{e}")
         return
-
-    # 由小到大排列：確保配額耗盡前，小清單能全部完成
-    playlists_to_sort = [
-        ("Live", "PLLUffVVIYEV_8vV5tNnViOQaNhDrrbcr9"),  # 7
-        ("Covers (Chinese)", "PLLUffVVIYEV8cdnk8mseZz8As7Pljs7nm"),  # 9
-        ("Other Languages Songs", "PLLUffVVIYEV8eyriNIjptSXg__6RB1ltx"),  # 13
-        ("Song of Combination", "PLEA4152F16A0C1ACC"),  # 27
-        ("Covers (English)", "PLLUffVVIYEV-QmbB7ZvRvM4zA4OJepmXd"),  # 56
-        ("Musical Instruments", "PL21C891F13DFB9C25"),  # 100
-        ("KTV", "PLLUffVVIYEV947ZHP92M-PVEKpdJtgU06"),  # 142
-        ("English", "PLLUffVVIYEV_RlQHzEqBUa1jFlAW9FzDN"),  # 163
-        ("Japanese", "PLLUffVVIYEV-EtG7w59dxNxHIE_GzMRS0"),  # 190
-        ("Chinese", "PLLUffVVIYEV9wvxjcqMEbuojSiMqvwGNA"),  # 217
-        ("Covers (Japanese)", "PLLUffVVIYEV-NE2WtmUva-rw4R3t3UBA1"),  # 226
-        ("BGM / OST", "PLLUffVVIYEV_eoZzUyq6z2pAumBCbYwit"),  # 272
-        ("YTMusic", "PLLUffVVIYEV8J2P4Tp-rkEYZEtMHHkm7o"),  # 1085
-    ]
 
     for name, playlist_id in playlists_to_sort:
         logger.info(f"開始處理清單：{name} (目前 Quota 已用: {quota_manager.used})")

@@ -42,6 +42,9 @@ YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 CLIENT_SECRET_FILE = BASE_DIR / os.environ.get("CLIENT_SECRET_FILE", "secrets/client_secret.json")
 TOKEN_FILE = BASE_DIR / os.environ.get("TOKEN_FILE", "secrets/token.json")
 
+# ── 執行期狀態檔（自動產生，已被 .gitignore 排除）──
+QUOTA_STATE_FILE = BASE_DIR / "quota_state.json"
+
 # ── 一般設定（可用環境變數覆寫）────────────────
 SCHEDULE_TIME = os.environ.get("SCHEDULE_TIME", "16:05")
 YOUTUBE_DAILY_LIMIT = int(os.environ.get("YOUTUBE_DAILY_LIMIT", "10000"))

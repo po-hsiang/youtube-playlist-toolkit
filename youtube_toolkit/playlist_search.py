@@ -6,22 +6,24 @@
 
 from typing import Any, Dict, List, Optional
 
+from youtube_toolkit import playlists
 from youtube_toolkit.youtube_client import YouTubeClient
 
-PLAYLIST_ID = "PLLUffVVIYEV8J2P4Tp-rkEYZEtMHHkm7o"  # My YTMusic（公開播放清單）
-# 其他常用目標：
-# "PLLUffVVIYEV_eoZzUyq6z2pAumBCbYwit"  # BGM
-# "PLLUffVVIYEV80h2q5Q2b5oUfowXxYAwxo"  # 大合刷（私人播放清單，API Key 讀不到）
-# "PLLUffVVIYEV-EtG7w59dxNxHIE_GzMRS0"  # Japanese（公開播放清單）
 MIN_KEYWORD_LENGTH = 2
 MAX_MESSAGE_LENGTH = 1900  # 分段上限（為 Discord 2,000 字元上限預留空間）
 
 
 class YouTubeAPIHandler:
-    """載入播放清單後提供本地關鍵字搜尋。"""
+    """載入播放清單後提供本地關鍵字搜尋。
 
-    def __init__(self, client: Optional[YouTubeClient] = None, playlist_id: str = PLAYLIST_ID):
+    目標清單設定於 playlists.toml 的 [playlist_search].target，改字串即可換清單。
+    """
+
+    def __init__(self, client: Optional[YouTubeClient] = None, playlist_id: Optional[str] = None):
         self.client = client or YouTubeClient.for_public_data()
+        if playlist_id is None:
+            name, playlist_id = playlists.tool_target("playlist_search")
+            print(f"目標清單：{name}（{playlist_id}）")
         self.song_list = self._load_song_list(playlist_id)
 
     def _load_song_list(self, playlist_id: str) -> List[Dict[str, Any]]:

@@ -7,6 +7,10 @@ token.json
 *.pickle
 HANDOFF.md
 
+# ── 執行期狀態與日誌（自動產生）────────────────
+quota_state.json*
+logs/
+
 # ── Python ────────────────────────────────────
 __pycache__/
 *.py[cod]
