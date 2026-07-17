@@ -21,18 +21,26 @@ API_SERVICE_NAME = "youtube"
 API_VERSION = "v3"
 
 
+class ReauthorizationRequired(Exception):
+    """憑證失效且處於無人值守模式：不可啟動瀏覽器授權（會讓排程 daemon 卡死）。"""
+
+
 def build_public_service() -> Resource:
     """以 API Key 建立 YouTube 服務，適用於讀取公開資料（搜尋、公開清單）。"""
     return build(API_SERVICE_NAME, API_VERSION, developerKey=config.require_api_key())
 
 
-def build_oauth_service(scopes: Optional[List[str]] = None) -> Resource:
-    """以 OAuth 2.0 使用者憑證建立 YouTube 服務，適用於修改播放清單。"""
-    credentials = get_oauth_credentials(scopes or OAUTH_SCOPES)
+def build_oauth_service(scopes: Optional[List[str]] = None, interactive: bool = True) -> Resource:
+    """以 OAuth 2.0 使用者憑證建立 YouTube 服務，適用於修改播放清單。
+
+    interactive=False（排程等無人值守情境）時，若需要重新授權不會開瀏覽器，
+    改拋出 ReauthorizationRequired 讓呼叫端記錯誤、下輪再試。
+    """
+    credentials = get_oauth_credentials(scopes or OAUTH_SCOPES, interactive=interactive)
     return build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
 
 
-def get_oauth_credentials(scopes: List[str]) -> Credentials:
+def get_oauth_credentials(scopes: List[str], interactive: bool = True) -> Credentials:
     """取得有效的 OAuth 憑證：快取 → 過期就刷新 → 刷新失敗才重走瀏覽器授權。"""
     _warn_if_legacy_pickle_exists()
 
@@ -45,10 +53,15 @@ def get_oauth_credentials(scopes: List[str]) -> Credentials:
             _save_credentials(credentials)
             logger.info("Access Token 更新成功。")
         except RefreshError as e:
-            logger.error(f"Refresh Token 已失效，將重新啟動 OAuth 授權流程：{e}")
+            logger.error(f"Refresh Token 已失效，需要重新授權：{e}")
             credentials = None
 
     if not credentials or not credentials.valid:
+        if not interactive:
+            raise ReauthorizationRequired(
+                f"OAuth 憑證無效或已失效（{config.TOKEN_FILE}），目前為無人值守模式，"
+                "不啟動瀏覽器授權。請手動執行一次 `uv run yt-sort --once` 完成重新授權。"
+            )
         credentials = _run_authorization_flow(scopes)
         _save_credentials(credentials)
 

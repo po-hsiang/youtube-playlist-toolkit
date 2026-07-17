@@ -1,12 +1,25 @@
-"""youtube_client 模組單元測試：以假 service 驗證分頁、防呆與配額記帳。
+"""youtube_client 模組單元測試：以假 service 驗證分頁、防呆、配額記帳與讀取重試。
 
 執行：uv run python -m unittest discover -s tests -v
 """
 
+import json
 import unittest
+from unittest import mock
+
+import httplib2
+from googleapiclient.errors import HttpError
 
 from youtube_toolkit.quota_manager import QuotaManager, QuotaSoftLimitExceeded
-from youtube_toolkit.youtube_client import QuotaCost, YouTubeClient
+from youtube_toolkit.youtube_client import MAX_READ_ATTEMPTS, QuotaCost, YouTubeClient
+
+
+def http_error(status, reason="backendError"):
+    resp = httplib2.Response({"status": status})
+    content = json.dumps(
+        {"error": {"code": status, "message": reason, "errors": [{"reason": reason}]}}
+    ).encode()
+    return HttpError(resp, content)
 
 
 class FakeRequest:
@@ -190,6 +203,56 @@ class TestQuotaAccounting(unittest.TestCase):
 
         self.assertEqual(service.update_calls, [])  # 熔斷必須發生在 API 呼叫「之前」
         self.assertEqual(quota.used, 50)  # 且不得多扣
+
+
+class FlakyRequest:
+    """execute() 依序拋出注入的例外，用完後回傳正常結果。"""
+
+    def __init__(self, failures, response):
+        self._failures = list(failures)
+        self._response = response
+        self.calls = 0
+
+    def execute(self):
+        self.calls += 1
+        if self._failures:
+            raise self._failures.pop(0)
+        return self._response
+
+
+@mock.patch("youtube_toolkit.youtube_client.time.sleep")  # 測試不真的等待
+class TestReadRetry(unittest.TestCase):
+    def _client(self):
+        quota = QuotaManager(daily_limit=100, soft_limit=80)
+        return YouTubeClient(FakeService(), quota), quota
+
+    def test_transient_errors_retried_and_each_attempt_charged(self, _sleep):
+        client, quota = self._client()
+        request = FlakyRequest([http_error(500), http_error(503)], {"ok": True})
+
+        result = client._execute_with_retry(request, QuotaCost.LIST, "flaky-read")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(request.calls, 3)
+        self.assertEqual(quota.used, 3)  # 失敗的請求同樣消耗配額，逐次記帳
+
+    def test_non_retryable_error_raises_immediately(self, _sleep):
+        client, quota = self._client()
+        request = FlakyRequest([http_error(404, "notFound")], {"ok": True})
+
+        with self.assertRaises(HttpError):
+            client._execute_with_retry(request, QuotaCost.LIST, "not-found")
+
+        self.assertEqual(request.calls, 1)  # 404 不重試
+
+    def test_gives_up_after_max_attempts(self, _sleep):
+        client, _ = self._client()
+        request = FlakyRequest([http_error(500)] * MAX_READ_ATTEMPTS, {"ok": True})
+
+        with self.assertRaises(HttpError):
+            client._execute_with_retry(request, QuotaCost.LIST, "always-500")
+
+        self.assertEqual(request.calls, MAX_READ_ATTEMPTS)
 
 
 if __name__ == "__main__":

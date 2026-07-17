@@ -121,6 +121,19 @@ class TestPlaylistSorterRun(unittest.TestCase):
         PlaylistSorter("PL-test", client).run(auto_run=True)
         self.assertEqual(client.move_attempts, 0)
 
+    def test_dry_run_reports_plan_but_never_writes(self, _sleep):
+        client = make_client(["d", "a", "b", "c"])
+        planned = PlaylistSorter("PL-test", client).run(auto_run=True, dry_run=True)
+        self.assertEqual(planned, 1)  # 回傳 LIS 計畫的搬移數，供 job 統計總成本
+        self.assertEqual(client.move_attempts, 0)  # 絕不可碰寫入 API
+
+    def test_run_returns_executed_move_count(self, _sleep):
+        client = make_client(["d", "a", "b", "c"])
+        self.assertEqual(PlaylistSorter("PL-test", client).run(auto_run=True), 1)
+
+        already_sorted = make_client(["a", "b", "c"])
+        self.assertEqual(PlaylistSorter("PL-test", already_sorted).run(auto_run=True), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,12 @@ googleapiclient 底層 (httplib2) 內建 60 秒逾時與標準 HttpError 錯誤�
 取代先前手刻、無逾時保護的 requests 呼叫。
 """
 
+import random
+import time
 from typing import Any, Dict, List, Optional
 
 from googleapiclient.discovery import Resource
+from googleapiclient.errors import HttpError
 
 from youtube_toolkit import auth, config
 from youtube_toolkit.log_utils import logger
@@ -26,6 +29,11 @@ class QuotaCost:
 
 
 MAX_RESULTS_PER_PAGE = 50  # YouTube API 單頁／單批上限
+
+# 讀取路徑的暫時性錯誤重試（寫入的重試政策由 playlist_sorter 控制，含 409）
+READ_RETRY_STATUS = (500, 502, 503)
+MAX_READ_ATTEMPTS = 3
+READ_RETRY_BASE_DELAY = 1.0  # 秒，指數退避
 
 
 class YouTubeClient:
@@ -48,32 +56,54 @@ class YouTubeClient:
         return cls(auth.build_public_service(), quota_manager)
 
     @classmethod
-    def for_authorized_user(cls, quota_manager: Optional[QuotaManager] = None) -> "YouTubeClient":
-        """OAuth 2.0 認證：修改使用者自己的播放清單。"""
-        return cls(auth.build_oauth_service(), quota_manager)
+    def for_authorized_user(
+        cls, quota_manager: Optional[QuotaManager] = None, interactive: bool = True
+    ) -> "YouTubeClient":
+        """OAuth 2.0 認證：修改使用者自己的播放清單。
+
+        interactive=False 時若需重新授權會拋 auth.ReauthorizationRequired，不開瀏覽器。
+        """
+        return cls(auth.build_oauth_service(interactive=interactive), quota_manager)
+
+    def _execute_with_retry(self, request: Any, cost: int, context: str) -> Dict[str, Any]:
+        """執行讀取請求，對暫時性 HTTP 錯誤（500/502/503）指數退避重試。
+
+        每次嘗試都個別記帳——失敗的請求同樣消耗 Google 端配額，計數保守才安全。
+        """
+        for attempt in range(MAX_READ_ATTEMPTS):
+            self.quota_manager.consume(cost=cost, context=context)
+            try:
+                return request.execute()
+            except HttpError as e:
+                if e.resp.status in READ_RETRY_STATUS and attempt < MAX_READ_ATTEMPTS - 1:
+                    delay = READ_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(
+                        f"[重試 {attempt + 1}/{MAX_READ_ATTEMPTS}] {context} 失敗（HTTP {e.resp.status}），"
+                        f"{delay:.1f} 秒後重試..."
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
 
     # ── 讀取 ──────────────────────────────────────────────
 
     def fetch_playlist_entries(self, playlist_id: str) -> List[Dict[str, Any]]:
-        """抓取播放清單全部項目（自動分頁）。
+        """抓取播放清單全部項目（自動分頁），包含已私人／已刪除的項目。
 
-        回傳依清單順序排列的 [{"playlist_item_id", "video_id", "title"}]。
+        回傳依清單順序排列的 [{"playlist_item_id", "video_id", "title", "privacy_status"}]。
+        注意：私人／已刪除影片的 title 會被 YouTube 改為 "Private video" / "Deleted video"。
         """
         logger.debug(f"開始抓取播放清單【{playlist_id}】的項目...")
         entries: List[Dict[str, Any]] = []
         page_token = None
         while True:
-            self.quota_manager.consume(cost=QuotaCost.LIST, context="playlistItems.list")
-            response = (
-                self._service.playlistItems()
-                .list(
-                    part="snippet",
-                    playlistId=playlist_id,
-                    maxResults=MAX_RESULTS_PER_PAGE,
-                    pageToken=page_token,
-                )
-                .execute()
+            request = self._service.playlistItems().list(
+                part="snippet,status",
+                playlistId=playlist_id,
+                maxResults=MAX_RESULTS_PER_PAGE,
+                pageToken=page_token,
             )
+            response = self._execute_with_retry(request, QuotaCost.LIST, "playlistItems.list")
             for item in response.get("items", []):
                 resource = item["snippet"]["resourceId"]
                 if resource.get("kind") != "youtube#video":
@@ -83,6 +113,7 @@ class YouTubeClient:
                         "playlist_item_id": item["id"],
                         "video_id": resource["videoId"],
                         "title": item["snippet"]["title"],
+                        "privacy_status": item.get("status", {}).get("privacyStatus"),
                     }
                 )
             page_token = response.get("nextPageToken")
@@ -92,19 +123,18 @@ class YouTubeClient:
         return entries
 
     def fetch_video_details(self, video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-        """批次抓取影片詳情（每批 50 部），回傳 {video_id: {"title", "channel", "views"}}。
+        """批次抓取影片詳情（每批 50 部），
 
-        已刪除或私人影片沒有統計資料，不會出現在回傳結果中（呼叫端請以 .get() 取值）。
+        回傳 {video_id: {"title", "channel", "views", "privacy_status"}}。
+        已刪除或私人影片不會出現在回傳結果中（呼叫端請以 .get() 取值）。
         """
         logger.debug(f"正在批次抓取 {len(video_ids)} 部影片的詳細資訊...")
         details: Dict[str, Dict[str, Any]] = {}
         for start in range(0, len(video_ids), MAX_RESULTS_PER_PAGE):
             batch = video_ids[start : start + MAX_RESULTS_PER_PAGE]
-            self.quota_manager.consume(
-                cost=QuotaCost.LIST, context=f"videos.list (batch {start // MAX_RESULTS_PER_PAGE + 1})"
-            )
-            response = (
-                self._service.videos().list(part="snippet,statistics", id=",".join(batch)).execute()
+            request = self._service.videos().list(part="snippet,statistics,status", id=",".join(batch))
+            response = self._execute_with_retry(
+                request, QuotaCost.LIST, f"videos.list (batch {start // MAX_RESULTS_PER_PAGE + 1})"
             )
             for item in response.get("items", []):
                 statistics = item.get("statistics")
@@ -115,6 +145,7 @@ class YouTubeClient:
                     "title": snippet.get("title", "N/A"),
                     "channel": snippet.get("channelTitle", "N/A"),
                     "views": int(statistics.get("viewCount", 0)),
+                    "privacy_status": item.get("status", {}).get("privacyStatus"),
                 }
         logger.info(f"影片詳細資訊抓取完畢（{len(details)}/{len(video_ids)} 部有資料）。")
         return details
@@ -164,5 +195,5 @@ class YouTubeClient:
 
     def search_videos(self, **params: Any) -> Dict[str, Any]:
         """search.list 包裝（成本 100 units／次）。params 即 API 原生參數。"""
-        self.quota_manager.consume(cost=QuotaCost.SEARCH, context=f"search.list (q={params.get('q', '')})")
-        return self._service.search().list(**params).execute()
+        request = self._service.search().list(**params)
+        return self._execute_with_retry(request, QuotaCost.SEARCH, f"search.list (q={params.get('q', '')})")

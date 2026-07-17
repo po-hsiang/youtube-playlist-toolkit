@@ -14,6 +14,7 @@
 | 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 讀取整份播放清單後在本地搜尋歌名／頻道關鍵字，結果自動分段（≤1,900 字元／段） |
 | 👯 重複歌曲偵測 | `youtube_toolkit/duplicate_finder.py` | API Key | 以標題「子字串互相包含」比對找出疑似重複的歌，依觀看數排序建議保留哪一首 |
 | 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
+| 🩺 清單健康檢查 | `youtube_toolkit/playlist_health.py` | API Key | 掃描各清單，列出**私人／已刪除／不公開**的影片（網址、位置、可得資訊） |
 
 共用模組：
 
@@ -45,7 +46,8 @@ youtube_api/
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
 │   ├── playlist_search.py      # 🔍 歌單載入 + 關鍵字搜尋
 │   ├── duplicate_finder.py     # 👯 重複歌曲偵測
-│   └── video_search.py         # 🌐 search.list API 包裝
+│   ├── video_search.py         # 🌐 search.list API 包裝
+│   └── playlist_health.py      # 🩺 清單健康檢查（私人/已刪除/不公開）
 ├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
 │   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
 │   ├── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
@@ -53,7 +55,9 @@ youtube_api/
 │   ├── test_quota_manager.py   #    配額持久化、換日歸零、壞檔容錯
 │   ├── test_playlists.py       #    playlists.toml 載入與驗證
 │   ├── test_duplicate_finder.py#    標題正規化與分組
-│   └── test_log_utils.py       #    上色不污染檔案日誌
+│   ├── test_log_utils.py       #    上色不污染檔案日誌
+│   ├── test_auth.py            #    無人值守模式不開瀏覽器
+│   └── test_playlist_health.py #    私人/已刪除/不公開分類
 ├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
 │   ├── client_secret.json      #    OAuth 用戶端密鑰
 │   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
@@ -152,13 +156,20 @@ copy .env.example .env        # Windows
 | 歌單關鍵字搜尋 | `uv run python -m youtube_toolkit.playlist_search` | `uv run yt-playlist-search` |
 | 重複歌曲偵測 | `uv run python -m youtube_toolkit.duplicate_finder` | `uv run yt-duplicates` |
 | 影片關鍵字搜尋 | `uv run python -m youtube_toolkit.video_search` | `uv run yt-video-search` |
+| 清單健康檢查 | `uv run python -m youtube_toolkit.playlist_health` | `uv run yt-health` |
 
 ### 1. 播放清單自動排序（主力工具）
 
-執行後會：
+執行模式：
 
-1. **立即執行一次**完整排序作業（測試用途的啟動即跑）
-2. 進入待命狀態，**每天 16:05**（可用 `SCHEDULE_TIME` 調整）自動再執行（`Ctrl+C` 結束）
+| 指令 | 行為 |
+|------|------|
+| `uv run yt-sort` | 立即執行一輪，然後進入待命，**每天 16:05**（可用 `SCHEDULE_TIME` 調整）自動再執行（`Ctrl+C` 結束） |
+| `uv run yt-sort --once` | 只執行一輪就結束（也用於**手動重新 OAuth 授權**） |
+| `uv run yt-sort --dry-run` | 只顯示每份清單的 LIS 搬移計畫與預估配額成本，**不寫入 YouTube** |
+
+> **無人值守保護**：每日排程觸發的執行若遇到憑證失效，**不會**開瀏覽器等授權（那會讓
+> daemon 卡死），改記 ERROR 並於次日再試；請手動執行 `uv run yt-sort --once` 完成重新授權。
 
 每次作業依序處理 `playlists.toml` 中 `[sorter].order` 設定的清單（建議**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
 
@@ -196,6 +207,29 @@ Official MV／Lyric Video／官方完整版／feat. 等宣傳雜訊、壓縮空�
 ### 4. 影片關鍵字搜尋
 
 搜尋近 180 天內的影片，可調整 `results_count`（預設 50）與 `search_order`（relevance / date / rating / title / viewCount）。注意每次呼叫消耗 **100 units**。
+
+### 5. 清單健康檢查
+
+```bash
+uv run yt-health              # 掃描 playlists.toml 的全部清單
+uv run yt-health YTMusic      # 只掃描指定清單（可多個）
+```
+
+偵測原理：`playlistItems.list` 回傳清單裡**所有**項目（含壞掉的），`videos.list` 只回傳
+還存在的影片——兩邊對照，缺席者即私人或已刪除；不公開（unlisted）由影片的
+`status.privacyStatus` 判讀。輸出範例：
+
+```
+⚠️ BGM / OST：268 部影片中發現 6 個問題項目
+  🔒 私人（2）：
+    - 第  160 首  https://youtu.be/DbF9RQphIss  Private video
+  🗑️ 已刪除（4）：
+    - 第  156 首  https://youtu.be/yYrLMsd3XAU  Deleted video
+```
+
+> 私人／已刪除影片的**原始標題已被 YouTube 抹除**，能列出的是網址、清單位置與 videoId；
+> 不公開影片仍可播放（標題、頻道完整可見），但屬於高下架風險族群。
+> 無法讀取的私人清單（如「大合刷」）會自動跳過並註記。掃描約 2,500 部影片 ≈ 115 units。
 
 ---
 

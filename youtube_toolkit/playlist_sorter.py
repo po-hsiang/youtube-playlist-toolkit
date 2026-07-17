@@ -1,12 +1,19 @@
 """播放清單自動排序器（主力工具）。
 
 每天於排定時間將多份播放清單依「頻道 A→Z、觀看數 高→低」排序並寫回 YouTube，
-全程受 QuotaManager 保護。執行方式：python -m youtube_toolkit.playlist_sorter
+全程受 QuotaManager 保護。
+
+執行方式：
+    uv run yt-sort              # 立即跑一輪後進入每日排程待命（預設）
+    uv run yt-sort --once       # 只跑一輪就結束（也用於手動重新 OAuth 授權）
+    uv run yt-sort --dry-run    # 只顯示 LIS 搬移計畫與預估配額，不寫入 YouTube
 
 排序策略：以 LIS（最長遞增子序列）計算最少搬移計畫——相對順序已正確的項目
 原地不動，只搬其餘項目，搬移次數為數學上的最小值（每次搬移 50 units）。
+排程（無人值守）執行時若憑證失效，不會開瀏覽器卡死，改記錯誤並於下輪再試。
 """
 
+import argparse
 import random
 import time
 from typing import Any, Dict, List
@@ -15,6 +22,7 @@ import schedule
 from googleapiclient.errors import HttpError
 
 from youtube_toolkit import config, playlists
+from youtube_toolkit.auth import ReauthorizationRequired
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.quota_manager import QuotaManager, QuotaSoftLimitExceeded
 from youtube_toolkit.sorting import Move, plan_minimal_moves
@@ -33,11 +41,12 @@ class PlaylistSorter:
         self.playlist_id = playlist_id
         self.client = client
 
-    def run(self, auto_run: bool = False) -> None:
+    def run(self, auto_run: bool = False, dry_run: bool = False) -> int:
+        """執行單一清單排序，回傳 LIS 計畫的搬移數（dry_run 或取消時不寫入）。"""
         entries = self.client.fetch_playlist_entries(self.playlist_id)
         if not entries:
             logger.error("無法抓取到任何項目，跳過此清單。")
-            return
+            return 0
 
         details = self.client.fetch_video_details([entry["video_id"] for entry in entries])
         for entry in entries:
@@ -53,7 +62,7 @@ class PlaylistSorter:
 
         if not moves:
             logger.info("✔️ 清單已完全有序，無需搬移（本清單寫入成本 0 units）。")
-            return
+            return 0
 
         estimated_cost = len(moves) * QuotaCost.UPDATE
         logger.info(
@@ -61,6 +70,16 @@ class PlaylistSorter:
             f"預估寫入成本 {estimated_cost} units"
             f"（剩餘可用 {self.client.quota_manager.remaining_before_soft_limit()} units）。"
         )
+
+        entries_by_id = {entry["playlist_item_id"]: entry for entry in entries}
+
+        if dry_run:
+            for step, move in enumerate(moves, start=1):
+                entry = entries_by_id[move.item_id]
+                logger.info(
+                    f"[DRY-RUN] {step}/{len(moves)}: 【{entry['channel']}】《{entry['title']}》→ 位置 {move.position}"
+                )
+            return len(moves)
 
         if not auto_run:
             confirm = input(
@@ -70,10 +89,10 @@ class PlaylistSorter:
             )
             if confirm.lower() != "yes":
                 logger.debug("操作已取消。")
-                return
+                return 0
 
-        entries_by_id = {entry["playlist_item_id"]: entry for entry in entries}
         self._execute_moves(moves, entries_by_id)
+        return len(moves)
 
     def _execute_moves(self, moves: List[Move], entries_by_id: Dict[str, Dict[str, Any]]) -> None:
         logger.debug(f"即將開始更新播放清單順序...（共 {len(moves)} 步搬移）")
@@ -133,8 +152,13 @@ class PlaylistSorter:
         return False
 
 
-def job_execute_sort() -> None:
-    logger.info("排程作業啟動：開始執行播放清單排序...")
+def job_execute_sort(interactive: bool = True, dry_run: bool = False) -> None:
+    """跑一輪全部清單的排序。
+
+    interactive=False（每日排程觸發）時，憑證失效不會開瀏覽器卡死 daemon，
+    改記 ERROR 並結束本輪；請手動執行 `uv run yt-sort --once` 完成重新授權。
+    """
+    logger.info("排程作業啟動：開始執行播放清單排序..." + ("（DRY-RUN 模式，不寫入）" if dry_run else ""))
 
     try:
         playlists_to_sort = playlists.sorter_playlists()  # 清單與順序設定於 playlists.toml
@@ -148,16 +172,20 @@ def job_execute_sort() -> None:
         state_file=config.QUOTA_STATE_FILE,  # 同配額日內重啟不歸零
     )
     try:
-        client = YouTubeClient.for_authorized_user(quota_manager)  # 全部清單共用同一次認證
+        client = YouTubeClient.for_authorized_user(quota_manager, interactive=interactive)
+    except ReauthorizationRequired as e:
+        logger.error(f"[需要重新授權] {e}")
+        return  # daemon 保持存活，明天再試；授權完成後自動恢復
     except Exception as e:
         logger.error(f"[認證失敗] 無法建立 YouTube 服務：{e}")
         return
 
+    total_planned_moves = 0
     for name, playlist_id in playlists_to_sort:
         logger.info(f"開始處理清單：{name} (目前 Quota 已用: {quota_manager.used})")
         try:
             sorter = PlaylistSorter(playlist_id=playlist_id, client=client)
-            sorter.run(auto_run=True)
+            total_planned_moves += sorter.run(auto_run=True, dry_run=dry_run)
             logger.info(f"清單 {name} 處理完畢\n\n\n")
 
         except QuotaSoftLimitExceeded:
@@ -174,15 +202,32 @@ def job_execute_sort() -> None:
         except Exception as e:
             logger.error(f"[未預期錯誤] 處理清單 {name} ({playlist_id}) 時失敗: {e}")
 
+    if dry_run:
+        logger.info(
+            f"[DRY-RUN] 全部清單總計：需搬移 {total_planned_moves} 首、"
+            f"預估寫入成本 {total_planned_moves * QuotaCost.UPDATE} units（未寫入任何變更）。"
+        )
     logger.info("排程作業執行完畢。")
 
 
 def main() -> None:
-    logger.info(f"已設定排程：每天 {config.SCHEDULE_TIME} 執行排序作業。")
-    schedule.every().day.at(config.SCHEDULE_TIME).do(job_execute_sort)
+    parser = argparse.ArgumentParser(description="YouTube 播放清單自動排序器（LIS 最少搬移）")
+    parser.add_argument("--once", action="store_true", help="立即執行一輪後結束，不進入每日排程待命")
+    parser.add_argument("--dry-run", action="store_true", help="只顯示搬移計畫與預估配額，不寫入 YouTube")
+    args = parser.parse_args()
 
-    logger.debug("為了測試，啟動時將立即執行一次作業...")
-    job_execute_sort()
+    if args.dry_run:
+        job_execute_sort(interactive=True, dry_run=True)
+        return
+    if args.once:
+        job_execute_sort(interactive=True)
+        return
+
+    logger.info(f"已設定排程：每天 {config.SCHEDULE_TIME} 執行排序作業。")
+    schedule.every().day.at(config.SCHEDULE_TIME).do(job_execute_sort, interactive=False)
+
+    logger.debug("啟動時立即執行一次作業...")
+    job_execute_sort(interactive=True)
 
     logger.info(f"腳本進入待命狀態，等待下一個排程時間 ({config.SCHEDULE_TIME})... (Ctrl+C 關閉)")
     while True:
