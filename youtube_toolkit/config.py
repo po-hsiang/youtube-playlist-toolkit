@@ -51,6 +51,11 @@ YOUTUBE_DAILY_LIMIT = int(os.environ.get("YOUTUBE_DAILY_LIMIT", "10000"))
 YOUTUBE_SOFT_LIMIT = int(os.environ.get("YOUTUBE_SOFT_LIMIT", "8000"))
 OAUTH_PORT = int(os.environ.get("OAUTH_PORT", "8080"))
 
+# ── MCP / REST 伺服器（yt-mcp）───────────────────
+MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")  # 容器內以環境變數改為 0.0.0.0
+MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
+MCP_CACHE_TTL_MINUTES = int(os.environ.get("MCP_CACHE_TTL_MINUTES", "360"))  # 快取 6 小時
+
 
 def require_api_key() -> str:
     """取得 API Key；未設定時給出明確指引，而非在呼叫 API 時才神祕失敗。"""

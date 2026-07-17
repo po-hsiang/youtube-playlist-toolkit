@@ -16,6 +16,7 @@
 | 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
 | 🩺 清單健康檢查 | `youtube_toolkit/playlist_health.py` | API Key | 掃描各清單，列出**私人／已刪除／不公開**的影片（網址、位置、可得資訊） |
 | ✂️ 失效影片清除 | `youtube_toolkit/playlist_cleaner.py` | OAuth 2.0 | 從清單移除**私人／已刪除**影片（不公開不受影響）；預設 dry-run、留底、二次驗證 |
+| 🔌 MCP + REST 伺服器 | `youtube_toolkit/mcp_server.py` | API Key | 把歌單搜尋開放給多個 AI Agent（n8n / Hermes / Claude）與一般 HTTP 服務；記憶體快取、唯讀 |
 
 共用模組：
 
@@ -49,7 +50,8 @@ youtube_api/
 │   ├── duplicate_finder.py     # 👯 重複歌曲偵測
 │   ├── video_search.py         # 🌐 search.list API 包裝
 │   ├── playlist_health.py      # 🩺 清單健康檢查（私人/已刪除/不公開）
-│   └── playlist_cleaner.py     # ✂️ 失效影片清除（dry-run 預設、留底）
+│   ├── playlist_cleaner.py     # ✂️ 失效影片清除（dry-run 預設、留底）
+│   └── mcp_server.py           # 🔌 MCP + REST 伺服器（快取、唯讀）
 ├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
 │   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
 │   ├── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
@@ -65,6 +67,9 @@ youtube_api/
 │   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
 ├── docs/
 │   └── PROJECT_REPORT.html     # 專案分析報告（架構圖、流程圖、優化建議）
+├── docs/MCP_CLIENT_SETUP.md    # 🔌 yt-mcp 客戶端設定指南（n8n / Hermes / REST）
+├── Dockerfile                  # yt-mcp 容器映像（uv + Python 3.12）
+├── docker-compose.yml          # yt-mcp 服務定義（ai-net 網路、127.0.0.1:8765）
 ├── playlists.toml              # 📋 播放清單設定：名稱→ID、排序順序、各工具目標
 ├── quota_state.json            # 配額計數狀態（自動產生，gitignored）
 ├── logs/                       # 輪替檔案日誌（自動產生，gitignored）
@@ -122,6 +127,9 @@ copy .env.example .env        # Windows
 | `YOUTUBE_DAILY_LIMIT` | | `10000` | 配額硬上限 |
 | `YOUTUBE_SOFT_LIMIT` | | `8000` | 配額軟上限（熔斷點） |
 | `OAUTH_PORT` | | `8080` | OAuth 本機回呼埠號 |
+| `MCP_HOST` | | `127.0.0.1` | yt-mcp 綁定位址（容器內設 `0.0.0.0`） |
+| `MCP_PORT` | | `8765` | yt-mcp 埠號 |
+| `MCP_CACHE_TTL_MINUTES` | | `360` | yt-mcp 清單快取有效時間（分鐘） |
 
 > 讀取優先序：**既有環境變數 > `.env` 檔 > 程式預設值**。
 
@@ -160,6 +168,7 @@ copy .env.example .env        # Windows
 | 影片關鍵字搜尋 | `uv run python -m youtube_toolkit.video_search` | `uv run yt-video-search` |
 | 清單健康檢查 | `uv run python -m youtube_toolkit.playlist_health` | `uv run yt-health` |
 | 失效影片清除 | `uv run python -m youtube_toolkit.playlist_cleaner` | `uv run yt-clean` |
+| MCP + REST 伺服器 | `uv run python -m youtube_toolkit.mcp_server` | `uv run yt-mcp`（容器：`docker compose up -d`） |
 
 ### 1. 播放清單自動排序（主力工具）
 
@@ -232,7 +241,7 @@ uv run yt-health YTMusic      # 只掃描指定清單（可多個）
 
 > 私人／已刪除影片的**原始標題已被 YouTube 抹除**，能列出的是網址、清單位置與 videoId；
 > 不公開影片仍可播放（標題、頻道完整可見），但屬於高下架風險族群。
-> 無法讀取的私人清單（如「大合刷」）會自動跳過並註記。掃描約 2,500 部影片 ≈ 115 units。
+> 無法讀取的私人清單會自動跳過並註記。掃描約 2,500 部影片 ≈ 115 units。
 
 ### 6. 失效影片清除
 
@@ -246,6 +255,22 @@ uv run yt-clean --apply --yes    # 跳過互動確認（非互動情境用）
 **不公開影片永遠不會被移除**（程式硬性排除＋單元測試把關）。四道防線：
 預設 dry-run → 刪除前重新向 API 驗證（讀得到詳情者一律剔除）→ 完整名單留底至
 `logs/cleanup-*.txt` → 互動輸入 `yes` 確認。只影響播放清單，不影響影片本身。
+
+### 7. MCP + REST 伺服器（yt-mcp）
+
+把歌單搜尋開放給多個 AI Agent（n8n、Hermes、Claude）與一般 HTTP 服務同時查詢：
+
+```bash
+docker compose up -d --build    # 容器長駐（建議）
+uv run yt-mcp                   # 或本機直接跑
+```
+
+- **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`，工具：`search_songs`／`list_playlists`／`refresh_playlist`
+- **REST 端點**：`GET /search?q=...&playlist=...`、`/playlists`、`/refresh`、`/health`
+- 清單載入一次後**常駐記憶體快取**（TTL 6 小時），查詢不耗 YouTube 配額；抓取經 QuotaManager 與其他工具合併記帳
+- **唯讀**：不暴露任何寫入功能；埠只映射到宿主機 `127.0.0.1`，容器間走 `ai-net` 網路
+
+> 客戶端（n8n MCP Client Tool 節點、Hermes、curl）完整設定見 **[docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md)**。
 
 ---
 

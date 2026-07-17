@@ -1,0 +1,21 @@
+# 機敏資訊絕不可進映像（執行期由 volume 掛載提供）
+.env
+secrets/
+
+# 執行期狀態與產物
+quota_state.json*
+logs/
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# 與伺服器無關
+.git/
+.idea/
+.vscode/
+docs/
+tests/
+HANDOFF.md
+README.md

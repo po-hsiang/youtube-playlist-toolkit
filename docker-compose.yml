@@ -1,0 +1,33 @@
+# yt-mcp：歌單搜尋 MCP + REST 伺服器
+#
+#   docker compose up -d --build     # 建置並啟動
+#   docker compose logs -f           # 看日誌
+#
+# 連線方式：
+#   - 主機上的服務（含瀏覽器/curl）：http://127.0.0.1:8765
+#   - 其他容器（n8n / hermes）：先接上 ai-net 網路，再用 http://yt-music-mcp:8765
+#       docker network connect ai-net <你的容器名>
+# 埠只映射到宿主機 127.0.0.1，不會暴露到區網。
+
+services:
+  yt-music-mcp:
+    build: .
+    image: yt-music-mcp:latest
+    container_name: yt-music-mcp
+    restart: unless-stopped
+    environment:
+      MCP_HOST: "0.0.0.0"  # 容器內須綁 0.0.0.0；對外仍只映射到宿主機 127.0.0.1
+    volumes:
+      - .:/app       # 專案目錄：.env、playlists.toml、quota_state.json 與主機共用
+      - /app/.venv   # 遮住主機的 Windows venv（容器用 /opt/venv）
+      - /app/secrets # 唯讀伺服器不需要 OAuth 憑證，不帶入容器
+      - /app/logs    # 檔案日誌容器內自留，避免與主機程序搶同一個檔案
+      - /app/.git
+    ports:
+      - "127.0.0.1:8765:8765"
+    networks:
+      - ai-net
+
+networks:
+  ai-net:
+    name: ai-net
