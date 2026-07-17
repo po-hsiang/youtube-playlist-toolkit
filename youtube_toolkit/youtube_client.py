@@ -25,6 +25,7 @@ class QuotaCost:
 
     LIST = 1  # playlistItems.list / videos.list（每頁／每批）
     UPDATE = 50  # playlistItems.update（搬移一個項目）
+    DELETE = 50  # playlistItems.delete（從清單移除一個項目）
     SEARCH = 100  # search.list（每次呼叫）
 
 
@@ -190,6 +191,13 @@ class YouTubeClient:
             },
         }
         self._service.playlistItems().update(part="snippet", body=body).execute()
+
+    def delete_playlist_item(self, playlist_item_id: str) -> None:
+        """把項目從播放清單移除（成本 50 units）。只影響清單，不影響影片本身。"""
+        self.quota_manager.consume(
+            cost=QuotaCost.DELETE, context=f"playlistItems.delete ({playlist_item_id})"
+        )
+        self._service.playlistItems().delete(id=playlist_item_id).execute()
 
     # ── 搜尋 ──────────────────────────────────────────────
 

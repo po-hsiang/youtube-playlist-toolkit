@@ -31,11 +31,12 @@ class FakeRequest:
 
 
 class FakePlaylistItems:
-    """兩頁分頁回應；update 呼叫會被記錄下來供斷言。"""
+    """兩頁分頁回應；update / delete 呼叫會被記錄下來供斷言。"""
 
-    def __init__(self, pages, update_calls):
+    def __init__(self, pages, update_calls, delete_calls):
         self._pages = pages
         self.update_calls = update_calls
+        self.delete_calls = delete_calls
 
     def list(self, **kwargs):
         page_index = int(kwargs.get("pageToken") or 0)
@@ -43,6 +44,10 @@ class FakePlaylistItems:
 
     def update(self, **kwargs):
         self.update_calls.append(kwargs)
+        return FakeRequest({})
+
+    def delete(self, **kwargs):
+        self.delete_calls.append(kwargs)
         return FakeRequest({})
 
 
@@ -70,9 +75,10 @@ class FakeSearch:
 class FakeService:
     def __init__(self, pages=None, details_by_id=None):
         self.update_calls = []
+        self.delete_calls = []
         self.videos_list_calls = []
         self.search_calls = []
-        self._playlist_items = FakePlaylistItems(pages or [], self.update_calls)
+        self._playlist_items = FakePlaylistItems(pages or [], self.update_calls, self.delete_calls)
         self._videos = FakeVideos(details_by_id or {}, self.videos_list_calls)
         self._search = FakeSearch(self.search_calls)
 
@@ -203,6 +209,26 @@ class TestQuotaAccounting(unittest.TestCase):
 
         self.assertEqual(service.update_calls, [])  # 熔斷必須發生在 API 呼叫「之前」
         self.assertEqual(quota.used, 50)  # 且不得多扣
+
+    def test_delete_playlist_item_charges_50(self):
+        service = FakeService()
+        quota = QuotaManager(daily_limit=1000, soft_limit=800)
+        client = YouTubeClient(service, quota)
+
+        client.delete_playlist_item("pi-dead")
+
+        self.assertEqual(quota.used, QuotaCost.DELETE)
+        self.assertEqual(service.delete_calls, [{"id": "pi-dead"}])
+
+    def test_delete_fuse_blocks_before_api_call(self):
+        service = FakeService()
+        quota = QuotaManager(daily_limit=100, soft_limit=80, initial_used=50)
+        client = YouTubeClient(service, quota)
+
+        with self.assertRaises(QuotaSoftLimitExceeded):
+            client.delete_playlist_item("pi-dead")
+
+        self.assertEqual(service.delete_calls, [])
 
 
 class FlakyRequest:

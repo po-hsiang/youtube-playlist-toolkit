@@ -15,6 +15,7 @@
 | 👯 重複歌曲偵測 | `youtube_toolkit/duplicate_finder.py` | API Key | 以標題「子字串互相包含」比對找出疑似重複的歌，依觀看數排序建議保留哪一首 |
 | 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
 | 🩺 清單健康檢查 | `youtube_toolkit/playlist_health.py` | API Key | 掃描各清單，列出**私人／已刪除／不公開**的影片（網址、位置、可得資訊） |
+| ✂️ 失效影片清除 | `youtube_toolkit/playlist_cleaner.py` | OAuth 2.0 | 從清單移除**私人／已刪除**影片（不公開不受影響）；預設 dry-run、留底、二次驗證 |
 
 共用模組：
 
@@ -47,7 +48,8 @@ youtube_api/
 │   ├── playlist_search.py      # 🔍 歌單載入 + 關鍵字搜尋
 │   ├── duplicate_finder.py     # 👯 重複歌曲偵測
 │   ├── video_search.py         # 🌐 search.list API 包裝
-│   └── playlist_health.py      # 🩺 清單健康檢查（私人/已刪除/不公開）
+│   ├── playlist_health.py      # 🩺 清單健康檢查（私人/已刪除/不公開）
+│   └── playlist_cleaner.py     # ✂️ 失效影片清除（dry-run 預設、留底）
 ├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
 │   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
 │   ├── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
@@ -157,6 +159,7 @@ copy .env.example .env        # Windows
 | 重複歌曲偵測 | `uv run python -m youtube_toolkit.duplicate_finder` | `uv run yt-duplicates` |
 | 影片關鍵字搜尋 | `uv run python -m youtube_toolkit.video_search` | `uv run yt-video-search` |
 | 清單健康檢查 | `uv run python -m youtube_toolkit.playlist_health` | `uv run yt-health` |
+| 失效影片清除 | `uv run python -m youtube_toolkit.playlist_cleaner` | `uv run yt-clean` |
 
 ### 1. 播放清單自動排序（主力工具）
 
@@ -230,6 +233,19 @@ uv run yt-health YTMusic      # 只掃描指定清單（可多個）
 > 私人／已刪除影片的**原始標題已被 YouTube 抹除**，能列出的是網址、清單位置與 videoId；
 > 不公開影片仍可播放（標題、頻道完整可見），但屬於高下架風險族群。
 > 無法讀取的私人清單（如「大合刷」）會自動跳過並註記。掃描約 2,500 部影片 ≈ 115 units。
+
+### 6. 失效影片清除
+
+```bash
+uv run yt-clean                  # dry-run：只列出將移除的名單（不動任何東西）
+uv run yt-clean --apply          # 實際移除（重新驗證 → 留底 → 輸入 yes 確認）
+uv run yt-clean --apply --yes    # 跳過互動確認（非互動情境用）
+```
+
+只移除**私人／已刪除**的清單項目（`playlistItems.delete`，每筆 50 units），
+**不公開影片永遠不會被移除**（程式硬性排除＋單元測試把關）。四道防線：
+預設 dry-run → 刪除前重新向 API 驗證（讀得到詳情者一律剔除）→ 完整名單留底至
+`logs/cleanup-*.txt` → 互動輸入 `yes` 確認。只影響播放清單，不影響影片本身。
 
 ---
 

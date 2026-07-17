@@ -1,6 +1,6 @@
 [project]
 name = "youtube_api"
-version = "0.5.0"
+version = "0.6.0"
 description = "YouTube 播放清單自動化工具組：自動排序、重複偵測、關鍵字搜尋"
 authors = [{ name = "po-hsiang", email = "wsxxcv11733@gmail.com" }]
 requires-python = ">=3.12"
@@ -18,6 +18,7 @@ yt-playlist-search = "youtube_toolkit.playlist_search:main"
 yt-duplicates = "youtube_toolkit.duplicate_finder:main"
 yt-video-search = "youtube_toolkit.video_search:main"
 yt-health = "youtube_toolkit.playlist_health:main"
+yt-clean = "youtube_toolkit.playlist_cleaner:main"
 
 [build-system]
 requires = ["uv_build>=0.9,<0.10"]

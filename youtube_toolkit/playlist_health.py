@@ -64,6 +64,7 @@ def audit_playlist(
         report[category].append(
             {
                 "position": position,
+                "playlist_item_id": entry["playlist_item_id"],  # playlistItems.delete 用
                 "video_id": entry["video_id"],
                 "url": f"https://youtu.be/{entry['video_id']}",
                 "title": detail.get("title") or entry["title"],
