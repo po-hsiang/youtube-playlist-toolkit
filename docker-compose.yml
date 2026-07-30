@@ -1,30 +1,62 @@
-# yt-mcp：歌單搜尋 MCP + REST 伺服器
+# YouTube 播放清單工具組的常駐服務
 #
-#   docker compose up -d --build     # 建置並啟動
+#   docker compose up -d --build     # 建置並啟動全部服務
 #   docker compose logs -f           # 看日誌
+#   docker compose ps                # 看狀態（含健康檢查）
 #
-# 連線方式：
-#   - 主機上的服務（含瀏覽器/curl）：http://127.0.0.1:8765
-#   - 其他容器（n8n / hermes）：先接上 ai-net 網路，再用 http://yt-music-mcp:8765
-#       docker network connect ai-net <你的容器名>
-# 埠只映射到宿主機 127.0.0.1，不會暴露到區網。
+# 兩個服務共用同一個映像與同一份專案掛載，因此也共用 quota_state.json（配額合併記帳）。
+# 改程式碼或 playlists.toml 後 `docker compose restart` 即生效（專案目錄是掛載進去的，
+# 且套件以 editable 方式安裝）；只有改依賴才需要 --build。
 
 services:
+  # 歌單搜尋 MCP + REST 伺服器（唯讀，供 n8n / Hermes / curl 查詢）
+  #   - 主機：http://127.0.0.1:8765
+  #   - 其他容器：先 `docker network connect ai-net <容器名>`，再用 http://yt-music-mcp:8765
   yt-music-mcp:
     build: .
-    image: yt-music-mcp:latest
+    image: yt-toolkit:latest
     container_name: yt-music-mcp
     restart: unless-stopped
+    command: ["/opt/venv/bin/yt-mcp"]
     environment:
       MCP_HOST: "0.0.0.0"  # 容器內須綁 0.0.0.0；對外仍只映射到宿主機 127.0.0.1
+      TZ: "Asia/Taipei"
     volumes:
       - .:/app       # 專案目錄：.env、playlists.toml、quota_state.json 與主機共用
       - /app/.venv   # 遮住主機的 Windows venv（容器用 /opt/venv）
       - /app/secrets # 唯讀伺服器不需要 OAuth 憑證，不帶入容器
-      - /app/logs    # 檔案日誌容器內自留，避免與主機程序搶同一個檔案
+      - /app/logs    # 檔案日誌容器內自留
       - /app/.git
     ports:
       - "127.0.0.1:8765:8765"
+    healthcheck:  # 用內建 Python 探測，映像不需額外裝 curl/wget
+      test: ["CMD", "/opt/venv/bin/python", "-c",
+             "import urllib.request as u; u.urlopen('http://127.0.0.1:8765/health', timeout=3)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - ai-net
+
+  # 每日自動排序（取代主機上的 uv run yt-sort 常駐視窗）
+  #   - restart: unless-stopped ＋ Docker Desktop 開機自啟 → 重開機後自動復活
+  #   - TZ 必須設定：schedule 套件用本地時間，不設會變成 UTC 16:05（台灣半夜 00:05）
+  #   - --unattended：容器內沒有瀏覽器，憑證失效時記錯誤而非卡在 OAuth 授權
+  #     （修復方式：在主機執行 uv run yt-sort --once 重新授權一次）
+  yt-sorter:
+    build: .
+    image: yt-toolkit:latest
+    container_name: yt-playlist-sorter
+    restart: unless-stopped
+    command: ["/opt/venv/bin/yt-sort", "--unattended"]
+    environment:
+      TZ: "Asia/Taipei"
+      LOG_FILE_NAME: "sorter.log"  # 與主機工具的 youtube_toolkit.log 分開，避免輪替互相干擾
+    volumes:
+      - .:/app       # 含 .env、playlists.toml、secrets/（OAuth 憑證，需可寫入以更新 token）
+      - /app/.venv
+      - /app/.git
     networks:
       - ai-net
 

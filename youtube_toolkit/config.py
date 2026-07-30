@@ -44,6 +44,7 @@ TOKEN_FILE = BASE_DIR / os.environ.get("TOKEN_FILE", "secrets/token.json")
 
 # ── 執行期狀態檔（自動產生，已被 .gitignore 排除）──
 QUOTA_STATE_FILE = BASE_DIR / "quota_state.json"
+SORTER_STATE_FILE = BASE_DIR / "sorter_state.json"  # 記錄最後一次排序日期，避免重啟重複跑
 
 # ── 一般設定（可用環境變數覆寫）────────────────
 SCHEDULE_TIME = os.environ.get("SCHEDULE_TIME", "16:05")
@@ -55,6 +56,13 @@ OAUTH_PORT = int(os.environ.get("OAUTH_PORT", "8080"))
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")  # 容器內以環境變數改為 0.0.0.0
 MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
 MCP_CACHE_TTL_MINUTES = int(os.environ.get("MCP_CACHE_TTL_MINUTES", "360"))  # 快取 6 小時
+
+# CLI 工具查詢 yt-mcp 伺服器的位址（走快取，0 配額）
+MCP_BASE_URL = os.environ.get("MCP_BASE_URL", f"http://127.0.0.1:{MCP_PORT}")
+
+# ── 檔案日誌 ─────────────────────────────────────
+# 不同程序（主機工具／排序容器）應寫不同檔案，避免同時輪替互相干擾
+LOG_FILE_NAME = os.environ.get("LOG_FILE_NAME", "youtube_toolkit.log")
 
 
 def require_api_key() -> str:

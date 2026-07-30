@@ -4,9 +4,10 @@
 全程受 QuotaManager 保護。
 
 執行方式：
-    uv run yt-sort              # 立即跑一輪後進入每日排程待命（預設）
-    uv run yt-sort --once       # 只跑一輪就結束（也用於手動重新 OAuth 授權）
-    uv run yt-sort --dry-run    # 只顯示 LIS 搬移計畫與預估配額，不寫入 YouTube
+    uv run yt-sort               # 立即跑一輪後進入每日排程待命（預設）
+    uv run yt-sort --once        # 只跑一輪就結束（也用於手動重新 OAuth 授權）
+    uv run yt-sort --dry-run     # 只顯示 LIS 搬移計畫與預估配額，不寫入 YouTube
+    uv run yt-sort --unattended  # 無人值守（容器／背景服務）：任何情況都不開瀏覽器
 
 排序策略：以 LIS（最長遞增子序列）計算最少搬移計畫——相對順序已正確的項目
 原地不動，只搬其餘項目，搬移次數為數學上的最小值（每次搬移 50 units）。
@@ -14,9 +15,11 @@
 """
 
 import argparse
+import json
 import random
 import time
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import schedule
 from googleapiclient.errors import HttpError
@@ -152,6 +155,22 @@ class PlaylistSorter:
         return False
 
 
+def _last_run_date() -> Optional[str]:
+    """讀取最後一次完成排序的本地日期（YYYY-MM-DD）；讀不到回傳 None。"""
+    try:
+        return json.loads(config.SORTER_STATE_FILE.read_text(encoding="utf-8")).get("last_run_date")
+    except (OSError, ValueError):
+        return None
+
+
+def _record_run_date() -> None:
+    try:
+        payload = json.dumps({"last_run_date": datetime.now().strftime("%Y-%m-%d")})
+        config.SORTER_STATE_FILE.write_text(payload, encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"無法寫入排序狀態檔（不影響本次作業）：{e}")
+
+
 def job_execute_sort(interactive: bool = True, dry_run: bool = False) -> None:
     """跑一輪全部清單的排序。
 
@@ -207,6 +226,8 @@ def job_execute_sort(interactive: bool = True, dry_run: bool = False) -> None:
             f"[DRY-RUN] 全部清單總計：需搬移 {total_planned_moves} 首、"
             f"預估寫入成本 {total_planned_moves * QuotaCost.UPDATE} units（未寫入任何變更）。"
         )
+    else:
+        _record_run_date()  # 供「今天已跑過就跳過啟動輪」判斷
     logger.info("排程作業執行完畢。")
 
 
@@ -214,20 +235,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube 播放清單自動排序器（LIS 最少搬移）")
     parser.add_argument("--once", action="store_true", help="立即執行一輪後結束，不進入每日排程待命")
     parser.add_argument("--dry-run", action="store_true", help="只顯示搬移計畫與預估配額，不寫入 YouTube")
+    parser.add_argument(
+        "--unattended",
+        action="store_true",
+        help="無人值守模式（容器／背景服務用）：憑證失效時記錯誤而非啟動瀏覽器授權",
+    )
     args = parser.parse_args()
 
+    # 容器內沒有瀏覽器，啟動時的立即執行也必須是非互動的
+    startup_interactive = not args.unattended
+
     if args.dry_run:
-        job_execute_sort(interactive=True, dry_run=True)
+        job_execute_sort(interactive=startup_interactive, dry_run=True)
         return
     if args.once:
-        job_execute_sort(interactive=True)
+        job_execute_sort(interactive=startup_interactive)
         return
 
     logger.info(f"已設定排程：每天 {config.SCHEDULE_TIME} 執行排序作業。")
     schedule.every().day.at(config.SCHEDULE_TIME).do(job_execute_sort, interactive=False)
 
-    logger.debug("啟動時立即執行一次作業...")
-    job_execute_sort(interactive=True)
+    # 啟動時補跑一輪（機器關機／容器重啟後的追進度機制），
+    # 但同一天內重複啟動不再重跑，避免重開機或容器重建時白燒配額。
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _last_run_date() == today:
+        logger.info(f"今天（{today}）已執行過排序，略過啟動時的立即執行，直接進入待命。")
+    else:
+        logger.debug("啟動時立即執行一次作業...")
+        job_execute_sort(interactive=startup_interactive)
 
     logger.info(f"腳本進入待命狀態，等待下一個排程時間 ({config.SCHEDULE_TIME})... (Ctrl+C 關閉)")
     while True:

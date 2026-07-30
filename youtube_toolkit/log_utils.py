@@ -29,7 +29,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 LOG_DIR = config.BASE_DIR / "logs"
-LOG_FILE = LOG_DIR / "youtube_toolkit.log"
+LOG_FILE = LOG_DIR / config.LOG_FILE_NAME
 MAX_LOG_BYTES = 2 * 1024 * 1024
 BACKUP_COUNT = 5
 
@@ -67,6 +67,14 @@ try:
     logger.addHandler(_file_handler)
 except OSError as e:  # 例如唯讀目錄：檔案日誌失效不應阻止程式運作
     logger.warning(f"無法建立檔案日誌（僅保留 console 輸出）：{e}")
+
+def set_console_level(level: int) -> None:
+    """調整 console 輸出等級（檔案日誌不受影響，仍保留完整 DEBUG）。
+
+    CLI 工具用來避免除錯訊息洗版；常駐服務維持預設的 DEBUG。
+    """
+    _console_handler.setLevel(level)
+
 
 if __name__ == "__main__":
     logger.critical("這是一個致命錯誤訊息")

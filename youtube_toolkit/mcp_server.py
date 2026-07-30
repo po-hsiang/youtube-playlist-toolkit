@@ -24,10 +24,10 @@ from starlette.responses import JSONResponse
 
 from youtube_toolkit import config, playlists
 from youtube_toolkit.log_utils import logger
+from youtube_toolkit.song_search import DEFAULT_LIMIT, MIN_KEYWORD_LENGTH, search_playlists
 from youtube_toolkit.youtube_client import YouTubeClient
 
-MIN_KEYWORD_LENGTH = 2
-DEFAULT_RESULT_LIMIT = 50
+DEFAULT_RESULT_LIMIT = DEFAULT_LIMIT
 
 
 class SongCache:
@@ -82,39 +82,8 @@ def perform_search(
     keyword: str, playlist: str = "", limit: int = DEFAULT_RESULT_LIMIT, cache: Optional[SongCache] = None
 ) -> Dict[str, Any]:
     cache = cache or CACHE
-    keyword = keyword.strip()
-    if len(keyword) < MIN_KEYWORD_LENGTH:
-        return {"error": f"關鍵字需至少 {MIN_KEYWORD_LENGTH} 個字元"}
-    limit = max(1, min(int(limit), 500))
-
     target_names = [playlist] if playlist else list(playlists.load_all())
-    lowered = keyword.lower()
-    results: List[Dict[str, Any]] = []
-    total_matches = 0
-
-    for name in target_names:
-        for position, video in enumerate(cache.get_videos(name), start=1):
-            if lowered in video["title"].lower() or lowered in video["channel"].lower():
-                total_matches += 1
-                if len(results) < limit:
-                    results.append(
-                        {
-                            "playlist": name,
-                            "position": position,
-                            "title": video["title"],
-                            "channel": video["channel"],
-                            "views": video["views"],
-                            "url": video["url"],
-                        }
-                    )
-
-    return {
-        "keyword": keyword,
-        "searched_playlists": target_names,
-        "total_matches": total_matches,
-        "returned": len(results),
-        "results": results,
-    }
+    return search_playlists(keyword, target_names, cache.get_videos, limit)
 
 
 def playlists_overview(cache: Optional[SongCache] = None) -> Dict[str, Any]:
@@ -189,7 +158,8 @@ async def rest_search(request: Request) -> JSONResponse:
     try:
         result = await to_thread.run_sync(partial(perform_search, keyword, playlist, int(limit)))
     except KeyError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        # 用 args[0] 而非 str(e)：KeyError 的 str() 會多包一層引號，洩漏 Python repr
+        return JSONResponse({"error": e.args[0] if e.args else "找不到指定的播放清單"}, status_code=404)
     status = 400 if "error" in result else 200
     return JSONResponse(result, status_code=status)
 
@@ -200,7 +170,8 @@ async def rest_refresh(request: Request) -> JSONResponse:
     try:
         result = await to_thread.run_sync(partial(perform_refresh, playlist))
     except KeyError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        # 用 args[0] 而非 str(e)：KeyError 的 str() 會多包一層引號，洩漏 Python repr
+        return JSONResponse({"error": e.args[0] if e.args else "找不到指定的播放清單"}, status_code=404)
     return JSONResponse(result)
 
 

@@ -4,6 +4,7 @@ secrets/
 
 # 執行期狀態與產物
 quota_state.json*
+sorter_state.json
 logs/
 .venv/
 build/

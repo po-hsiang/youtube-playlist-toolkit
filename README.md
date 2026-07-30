@@ -11,7 +11,7 @@
 | 工具 | 模組 | 認證方式 | 功能 |
 |------|------|----------|------|
 | 🎯 播放清單自動排序 | `youtube_toolkit/playlist_sorter.py` | OAuth 2.0 | **主力工具**。每天定時（預設 16:05）將 13 個播放清單依「頻道 A→Z、觀看數高→低」排序，並實際寫回 YouTube |
-| 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 讀取整份播放清單後在本地搜尋歌名／頻道關鍵字，結果自動分段（≤1,900 字元／段） |
+| 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 命令列搜尋歌名／頻道；優先走 yt-mcp 記憶體快取（**0 配額、毫秒回應**），伺服器沒開才呼叫 API |
 | 👯 重複歌曲偵測 | `youtube_toolkit/duplicate_finder.py` | API Key | 以標題「子字串互相包含」比對找出疑似重複的歌，依觀看數排序建議保留哪一首 |
 | 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
 | 🩺 清單健康檢查 | `youtube_toolkit/playlist_health.py` | API Key | 掃描各清單，列出**私人／已刪除／不公開**的影片（網址、位置、可得資訊） |
@@ -43,6 +43,7 @@ youtube_api/
 │   ├── auth.py                 # 認證中心：API Key / OAuth（JSON 憑證快取）
 │   ├── youtube_client.py       # 共用資料存取層（帶配額記帳）
 │   ├── sorting.py              # LIS 最少搬移計畫（純函式）
+│   ├── song_search.py          # 歌曲比對核心（MCP 伺服器與 CLI 共用）
 │   ├── log_utils.py            # 彩色 logging
 │   ├── quota_manager.py        # API 配額管理（軟/硬上限）
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
@@ -61,7 +62,10 @@ youtube_api/
 │   ├── test_duplicate_finder.py#    標題正規化與分組
 │   ├── test_log_utils.py       #    上色不污染檔案日誌
 │   ├── test_auth.py            #    無人值守模式不開瀏覽器
-│   └── test_playlist_health.py #    私人/已刪除/不公開分類
+│   ├── test_playlist_health.py #    私人/已刪除/不公開分類
+│   ├── test_playlist_cleaner.py#    候選名單安全性、二次驗證
+│   ├── test_playlist_search.py #    快取優先、退回 API、輸入錯誤處理
+│   └── test_mcp_server.py      #    快取 TTL 與搜尋邏輯
 ├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
 │   ├── client_secret.json      #    OAuth 用戶端密鑰
 │   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
@@ -72,6 +76,7 @@ youtube_api/
 ├── docker-compose.yml          # yt-mcp 服務定義（ai-net 網路、127.0.0.1:8765）
 ├── playlists.toml              # 📋 播放清單設定：名稱→ID、排序順序、各工具目標
 ├── quota_state.json            # 配額計數狀態（自動產生，gitignored）
+├── sorter_state.json           # 最後排序日期（自動產生，gitignored）
 ├── logs/                       # 輪替檔案日誌（自動產生，gitignored）
 ├── .env                        # ⚠️ 機敏設定（已被 .gitignore 排除）
 ├── .env.example                # .env 範本（可安全入版控）
@@ -130,6 +135,9 @@ copy .env.example .env        # Windows
 | `MCP_HOST` | | `127.0.0.1` | yt-mcp 綁定位址（容器內設 `0.0.0.0`） |
 | `MCP_PORT` | | `8765` | yt-mcp 埠號 |
 | `MCP_CACHE_TTL_MINUTES` | | `360` | yt-mcp 清單快取有效時間（分鐘） |
+| `MCP_BASE_URL` | | `http://127.0.0.1:8765` | CLI 查詢 yt-mcp 的位址 |
+| `LOG_FILE_NAME` | | `youtube_toolkit.log` | 檔案日誌名稱（排序容器用 `sorter.log` 分流） |
+| `TZ` | | 系統時區 | 容器內**必須**設為 `Asia/Taipei`，否則排程時間會變成 UTC |
 
 > 讀取優先序：**既有環境變數 > `.env` 檔 > 程式預設值**。
 
@@ -163,7 +171,7 @@ copy .env.example .env        # Windows
 | 工具 | 直接執行 | uv 指令 |
 |------|----------|---------|
 | 播放清單自動排序 | `uv run python -m youtube_toolkit.playlist_sorter` | `uv run yt-sort` |
-| 歌單關鍵字搜尋 | `uv run python -m youtube_toolkit.playlist_search` | `uv run yt-playlist-search` |
+| 歌單關鍵字搜尋 | `uv run python -m youtube_toolkit.playlist_search <關鍵字>` | `uv run yt-playlist-search <關鍵字>` |
 | 重複歌曲偵測 | `uv run python -m youtube_toolkit.duplicate_finder` | `uv run yt-duplicates` |
 | 影片關鍵字搜尋 | `uv run python -m youtube_toolkit.video_search` | `uv run yt-video-search` |
 | 清單健康檢查 | `uv run python -m youtube_toolkit.playlist_health` | `uv run yt-health` |
@@ -172,16 +180,25 @@ copy .env.example .env        # Windows
 
 ### 1. 播放清單自動排序（主力工具）
 
+**建議以容器常駐執行**（`docker compose up -d`，見下方「常駐服務」一節）：Docker Desktop
+開機自啟 ＋ `restart: unless-stopped`，重開機後自動復活，不必記得手動啟動。
+
 執行模式：
 
 | 指令 | 行為 |
 |------|------|
-| `uv run yt-sort` | 立即執行一輪，然後進入待命，**每天 16:05**（可用 `SCHEDULE_TIME` 調整）自動再執行（`Ctrl+C` 結束） |
+| `docker compose up -d yt-sorter` | **推薦**：容器常駐，每天 16:05 自動排序，開機自動復活 |
+| `uv run yt-sort` | 主機常駐：立即執行一輪後待命，每天 16:05 再執行（`Ctrl+C` 結束） |
 | `uv run yt-sort --once` | 只執行一輪就結束（也用於**手動重新 OAuth 授權**） |
 | `uv run yt-sort --dry-run` | 只顯示每份清單的 LIS 搬移計畫與預估配額成本，**不寫入 YouTube** |
+| `uv run yt-sort --unattended` | 無人值守：憑證失效時記錯誤而非開瀏覽器（容器預設帶此旗標） |
 
-> **無人值守保護**：每日排程觸發的執行若遇到憑證失效，**不會**開瀏覽器等授權（那會讓
-> daemon 卡死），改記 ERROR 並於次日再試；請手動執行 `uv run yt-sort --once` 完成重新授權。
+> **啟動補跑機制**：常駐程序啟動時會立即跑一輪，作為「機器關機期間漏跑」的補償；
+> 但同一天內重複啟動不再重跑（記錄於 `sorter_state.json`），因此重開機或容器重建
+> 不會白燒配額。每天 16:05 的排程不受此限制。
+
+> **無人值守保護**：排程觸發的執行若遇到憑證失效，**不會**開瀏覽器等授權（那會讓
+> daemon 卡死），改記 ERROR 並於次日再試；請在主機執行 `uv run yt-sort --once` 完成重新授權。
 
 每次作業依序處理 `playlists.toml` 中 `[sorter].order` 設定的清單（建議**由小到大排列**，確保配額耗盡前小清單能全部完成），流程為：
 
@@ -198,7 +215,31 @@ copy .env.example .env        # Windows
 
 ### 2. 歌單關鍵字搜尋
 
-啟動時讀取整份指定播放清單（建構子內自動執行），列印全部歌曲後，可用 `search_keyword_in_song_list(keyword)` 搜尋（關鍵字需 ≥ 2 個字元，比對歌名與頻道名、不分大小寫）。
+```bash
+uv run yt-playlist-search CAPPER              # 搜尋預設清單（playlists.toml 的 target）
+uv run yt-playlist-search CAPPER --all        # 搜尋全部 13 份清單
+uv run yt-playlist-search CAPPER -p Japanese  # 指定清單
+uv run yt-playlist-search CAPPER -n 10        # 最多顯示 10 筆
+uv run yt-playlist-search --dump              # 印出整份清單（不搜尋）
+uv run yt-playlist-search CAPPER --no-server  # 略過快取，直接呼叫 YouTube API
+uv run yt-playlist-search CAPPER -v           # 顯示逐筆配額等除錯訊息
+```
+
+比對歌名與頻道名稱、不分大小寫，關鍵字需 ≥ 2 個字元。輸出範例：
+
+```
+🔍「40mP」在 YTMusic 共 2 首　（yt-mcp 快取，0 units）
+
+  1. 【40meterP】40mP & miri「レイラ」
+     https://youtu.be/gqWAui-okAM　398,108 觀看　YTMusic 第 7 首
+```
+
+**查詢優先走 yt-mcp 伺服器的記憶體快取**（`docker compose up -d` 後即生效）：
+毫秒回應、**不消耗任何配額**；伺服器沒開時自動退回直接呼叫 API（會重新載入整份清單，
+YTMusic 約 42 units）。兩條路徑共用 `song_search.py` 的比對邏輯，結果保證一致。
+
+> 程式化使用（例如聊天機器人）可改用 `YouTubeAPIHandler.search_keyword_in_song_list()`，
+> 它會把結果切成 ≤1,900 字元的分段字串（為 Discord 2,000 字元上限預留）。
 
 ### 3. 重複歌曲偵測
 
@@ -256,13 +297,33 @@ uv run yt-clean --apply --yes    # 跳過互動確認（非互動情境用）
 預設 dry-run → 刪除前重新向 API 驗證（讀得到詳情者一律剔除）→ 完整名單留底至
 `logs/cleanup-*.txt` → 互動輸入 `yes` 確認。只影響播放清單，不影響影片本身。
 
-### 7. MCP + REST 伺服器（yt-mcp）
+### 7. 常駐服務（docker compose）
+
+兩個服務共用同一個映像與同一份專案掛載，因此**配額計數也是合併的**：
+
+| 服務 | 容器名 | 用途 |
+|------|--------|------|
+| `yt-sorter` | `yt-playlist-sorter` | 每日 16:05 自動排序（取代主機常駐視窗） |
+| `yt-music-mcp` | `yt-music-mcp` | 歌單搜尋 MCP + REST 伺服器（`127.0.0.1:8765`） |
+
+```bash
+docker compose up -d --build    # 建置並啟動兩個服務
+docker compose ps               # 看狀態（yt-music-mcp 有健康檢查）
+docker compose logs -f          # 看日誌
+docker compose restart          # 改程式碼／playlists.toml 後重啟即生效
+```
+
+> 專案目錄是掛載進容器的，且套件以 editable 方式安裝，因此**改程式碼只需 restart**，
+> 只有改依賴才需要 `--build`。容器內 `TZ=Asia/Taipei` 是必要設定——
+> `schedule` 用本地時間，不設會讓 16:05 變成 UTC 16:05（台灣半夜 00:05）。
+
+#### MCP + REST 搜尋伺服器
 
 把歌單搜尋開放給多個 AI Agent（n8n、Hermes、Claude）與一般 HTTP 服務同時查詢：
 
 ```bash
-docker compose up -d --build    # 容器長駐（建議）
-uv run yt-mcp                   # 或本機直接跑
+docker compose up -d yt-music-mcp   # 容器長駐（建議）
+uv run yt-mcp                       # 或本機直接跑
 ```
 
 - **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`，工具：`search_songs`／`list_playlists`／`refresh_playlist`

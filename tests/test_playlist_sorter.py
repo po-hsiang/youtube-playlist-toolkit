@@ -1,12 +1,16 @@
 """playlist_sorter 測試：以假 client 驗證 LIS 搬移執行、重試、熔斷與手動模式。"""
 
 import json
+import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest import mock
 
 import httplib2
 from googleapiclient.errors import HttpError
 
+from youtube_toolkit import playlist_sorter
 from youtube_toolkit.playlist_sorter import PlaylistSorter
 from youtube_toolkit.quota_manager import QuotaManager, QuotaSoftLimitExceeded
 
@@ -133,6 +137,39 @@ class TestPlaylistSorterRun(unittest.TestCase):
 
         already_sorted = make_client(["a", "b", "c"])
         self.assertEqual(PlaylistSorter("PL-test", already_sorted).run(auto_run=True), 0)
+
+
+class TestSorterRunDateState(unittest.TestCase):
+    """「今天已跑過就跳過啟動輪」的狀態記錄：避免重開機／容器重建重複燒配額。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_file = Path(self._tmp.name) / "sorter_state.json"
+        patcher = mock.patch("youtube_toolkit.config.SORTER_STATE_FILE", self.state_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_state_file_returns_none(self):
+        self.assertIsNone(playlist_sorter._last_run_date())
+
+    def test_record_then_read_returns_today(self):
+        playlist_sorter._record_run_date()
+        self.assertEqual(playlist_sorter._last_run_date(), datetime.now().strftime("%Y-%m-%d"))
+
+    def test_corrupted_state_file_returns_none(self):
+        self.state_file.write_text("壞掉的內容{{{", encoding="utf-8")
+        self.assertIsNone(playlist_sorter._last_run_date())
+
+    def test_dry_run_does_not_record(self):
+        client = make_client(["d", "a", "b", "c"])
+        with mock.patch.object(playlist_sorter, "YouTubeClient") as fake_cls, mock.patch.object(
+            playlist_sorter, "playlists"
+        ) as fake_playlists:
+            fake_cls.for_authorized_user.return_value = client
+            fake_playlists.sorter_playlists.return_value = [("Live", "PL-test")]
+            playlist_sorter.job_execute_sort(dry_run=True)
+        self.assertIsNone(playlist_sorter._last_run_date())  # dry-run 不算跑過
 
 
 if __name__ == "__main__":
