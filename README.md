@@ -157,7 +157,7 @@ copy .env.example .env        # Windows
 2. 下載 JSON 並存為 `secrets/client_secret.json`
 3. 首次執行時會自動開啟瀏覽器要求授權（本機 `port 8080` 回呼）
 4. 授權成功後憑證會以 **JSON 格式**快取到 `secrets/token.json`，之後自動載入／刷新；Refresh Token 失效時會自動重新走授權流程
-> 舊版的 `secrets/token.pickle`（pickle 格式）已停用；首次改版執行需重新授權一次，成功後舊檔可手動刪除。
+> 憑證自 v0.3.0 起改用 JSON（舊的 pickle 格式已停用，殘檔已於 2026-07-30 清除）。
 
 ---
 

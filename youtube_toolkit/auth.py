@@ -42,8 +42,6 @@ def build_oauth_service(scopes: Optional[List[str]] = None, interactive: bool = 
 
 def get_oauth_credentials(scopes: List[str], interactive: bool = True) -> Credentials:
     """取得有效的 OAuth 憑證：快取 → 過期就刷新 → 刷新失敗才重走瀏覽器授權。"""
-    _warn_if_legacy_pickle_exists()
-
     credentials = _load_cached_credentials(scopes)
 
     if credentials and credentials.expired and credentials.refresh_token:
@@ -100,9 +98,3 @@ def _run_authorization_flow(scopes: List[str]) -> Credentials:
         prompt="consent",
         authorization_prompt_message="請在瀏覽器中授權本應用程式存取您的 YouTube 播放清單",
     )
-
-
-def _warn_if_legacy_pickle_exists() -> None:
-    legacy_path = config.SECRETS_DIR / "token.pickle"
-    if legacy_path.exists() and legacy_path != config.TOKEN_FILE:
-        logger.info(f"偵測到舊版憑證快取 {legacy_path}（pickle 格式已停用），確認新憑證可用後即可手動刪除。")
