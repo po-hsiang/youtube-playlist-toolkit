@@ -325,12 +325,21 @@ docker compose up -d yt-music-mcp   # 容器長駐（建議）
 uv run yt-mcp                       # 或本機直接跑
 ```
 
-- **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`，工具：`search_songs`／`list_playlists`／`refresh_playlist`
-- **REST 端點**：`GET /search?q=...&playlist=...`、`/playlists`、`/refresh`、`/health`
+- **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`
+  工具：`search_songs`／`random_song`／`list_playlists`／`refresh_playlist`
+- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/playlists`、`/refresh`、`/health`
 - 清單載入一次後**常駐記憶體快取**（TTL 6 小時），查詢不耗 YouTube 配額；抓取經 QuotaManager 與其他工具合併記帳
 - **唯讀**：不暴露任何寫入功能；埠只映射到宿主機 `127.0.0.1`，容器間走 `ai-net` 網路
 
-> 客戶端（n8n MCP Client Tool 節點、Hermes、curl）完整設定見 **[docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md)**。
+隨機抽歌（給聊天機器人點歌用，`playlist` 省略時取 `playlists.toml` 的 `[random_song].target`）：
+
+```bash
+curl "http://127.0.0.1:8765/random"           # 抽 1 首 → {"songs": [{title, channel, url, ...}]}
+curl "http://127.0.0.1:8765/random?count=3"   # 抽 3 首不重複（上限 10）
+```
+
+> 客戶端（n8n MCP Client Tool 節點、Hermes、機器人點歌範例、curl）完整設定見
+> **[docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md)**。
 
 ---
 

@@ -1,9 +1,10 @@
 """yt-mcp：把歌單搜尋開放給多個 AI Agent 同時查詢的 MCP ＋ REST 伺服器。
 
 - MCP 端點（Streamable HTTP）：http://<host>:<port>/mcp
-  工具：search_songs / list_playlists / refresh_playlist
+  工具：search_songs / random_song / list_playlists / refresh_playlist
 - REST 端點（給非 AI 服務，與 MCP 共用同一份快取）：
-  GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、GET /refresh?playlist=...
+  GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、
+  GET /random?playlist=...&count=...&q=...、GET /refresh?playlist=...
 - 安全邊界：只用 API Key、**唯讀**——不暴露任何寫入功能（排序／清除只能在本機手動執行）。
 - 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓；
   之後所有查詢都是本地搜尋、不耗 YouTube 配額。抓取一律經 QuotaManager 記帳
@@ -12,6 +13,7 @@
 執行方式：uv run yt-mcp（設定見 .env 的 MCP_HOST / MCP_PORT / MCP_CACHE_TTL_MINUTES）
 """
 
+import random
 import threading
 from datetime import datetime, timedelta
 from functools import partial
@@ -24,10 +26,19 @@ from starlette.responses import JSONResponse
 
 from youtube_toolkit import config, playlists
 from youtube_toolkit.log_utils import logger
-from youtube_toolkit.song_search import DEFAULT_LIMIT, MIN_KEYWORD_LENGTH, search_playlists
+from youtube_toolkit.song_search import (
+    DEFAULT_LIMIT,
+    DEFAULT_RANDOM_COUNT,
+    MIN_KEYWORD_LENGTH,
+    pick_random_songs,
+    search_playlists,
+)
 from youtube_toolkit.youtube_client import YouTubeClient
 
 DEFAULT_RESULT_LIMIT = DEFAULT_LIMIT
+
+ALL_PLAYLISTS = "*"  # playlist 參數傳這個＝跨所有清單
+RANDOM_TARGET_SECTION = "random_song"  # playlists.toml 中抽歌預設清單的區段名
 
 
 class SongCache:
@@ -86,6 +97,30 @@ def perform_search(
     return search_playlists(keyword, target_names, cache.get_videos, limit)
 
 
+def random_target_names(playlist: str) -> List[str]:
+    """決定抽歌要從哪些清單抽。
+
+    留空＝playlists.toml 的 [random_song].target（預設只鎖定一份清單：跨全部 13 份
+    會在冷快取時一次載入約 2,400 首，又慢又耗配額）；"*"＝全部清單；其餘＝指定名稱。
+    """
+    if playlist == ALL_PLAYLISTS:
+        return list(playlists.load_all())
+    if playlist:
+        return [playlist]
+    return [playlists.tool_target(RANDOM_TARGET_SECTION)[0]]
+
+
+def perform_random(
+    playlist: str = "",
+    count: int = DEFAULT_RANDOM_COUNT,
+    keyword: str = "",
+    cache: Optional[SongCache] = None,
+    rng: Optional[random.Random] = None,
+) -> Dict[str, Any]:
+    cache = cache or CACHE
+    return pick_random_songs(random_target_names(playlist), cache.get_videos, count, keyword, rng)
+
+
 def playlists_overview(cache: Optional[SongCache] = None) -> Dict[str, Any]:
     cache = cache or CACHE
     cached = cache.status()
@@ -126,6 +161,21 @@ def search_songs(keyword: str, playlist: str = "", limit: int = DEFAULT_RESULT_L
 
 
 @mcp.tool()
+def random_song(
+    playlist: str = "", count: int = DEFAULT_RANDOM_COUNT, keyword: str = ""
+) -> Dict[str, Any]:
+    """從播放清單隨機抽歌（點歌／推薦歌曲時使用）。
+
+    playlist：留空＝預設清單（playlists.toml 的 [random_song].target），
+    `*`＝所有清單，或指定名稱（見 list_playlists）。
+    count：抽幾首不重複的歌（1～10，預設 1）。
+    keyword：只從歌名／頻道名稱命中的歌曲中抽（選填，至少 2 個字元）。
+    抽選走本地快取，不耗 YouTube API 配額；候選為空時 songs 會是空陣列。
+    """
+    return perform_random(playlist, count, keyword)
+
+
+@mcp.tool()
 def list_playlists() -> Dict[str, Any]:
     """列出所有可搜尋的播放清單，以及各清單的快取狀態（歌曲數、上次載入時間）。"""
     return playlists_overview()
@@ -138,6 +188,23 @@ def refresh_playlist(playlist: str = "") -> Dict[str, Any]:
 
 
 # ── REST 路由（非 AI 服務用；抓取可能阻塞，丟到 worker thread）─────
+
+
+class BadRequest(Exception):
+    """查詢參數格式錯誤 → 400。"""
+
+
+def _int_param(request: Request, name: str, default: int) -> int:
+    raw = request.query_params.get(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        raise BadRequest(f"{name} 必須是整數（收到「{raw}」）") from None
+
+
+def _error_response(e: Exception, status_code: int) -> JSONResponse:
+    # 用 args[0] 而非 str(e)：KeyError 的 str() 會多包一層引號，洩漏 Python repr
+    return JSONResponse({"error": e.args[0] if e.args else "請求無法處理"}, status_code=status_code)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -154,12 +221,28 @@ async def rest_playlists(_: Request) -> JSONResponse:
 async def rest_search(request: Request) -> JSONResponse:
     keyword = request.query_params.get("q", "")
     playlist = request.query_params.get("playlist", "")
-    limit = request.query_params.get("limit", str(DEFAULT_RESULT_LIMIT))
     try:
-        result = await to_thread.run_sync(partial(perform_search, keyword, playlist, int(limit)))
+        limit = _int_param(request, "limit", DEFAULT_RESULT_LIMIT)
+        result = await to_thread.run_sync(partial(perform_search, keyword, playlist, limit))
+    except BadRequest as e:
+        return _error_response(e, 400)
     except KeyError as e:
-        # 用 args[0] 而非 str(e)：KeyError 的 str() 會多包一層引號，洩漏 Python repr
-        return JSONResponse({"error": e.args[0] if e.args else "找不到指定的播放清單"}, status_code=404)
+        return _error_response(e, 404)
+    status = 400 if "error" in result else 200
+    return JSONResponse(result, status_code=status)
+
+
+@mcp.custom_route("/random", methods=["GET"])
+async def rest_random(request: Request) -> JSONResponse:
+    playlist = request.query_params.get("playlist", "")
+    keyword = request.query_params.get("q", "")
+    try:
+        count = _int_param(request, "count", DEFAULT_RANDOM_COUNT)
+        result = await to_thread.run_sync(partial(perform_random, playlist, count, keyword))
+    except BadRequest as e:
+        return _error_response(e, 400)
+    except KeyError as e:
+        return _error_response(e, 404)
     status = 400 if "error" in result else 200
     return JSONResponse(result, status_code=status)
 
@@ -170,15 +253,14 @@ async def rest_refresh(request: Request) -> JSONResponse:
     try:
         result = await to_thread.run_sync(partial(perform_refresh, playlist))
     except KeyError as e:
-        # 用 args[0] 而非 str(e)：KeyError 的 str() 會多包一層引號，洩漏 Python repr
-        return JSONResponse({"error": e.args[0] if e.args else "找不到指定的播放清單"}, status_code=404)
+        return _error_response(e, 404)
     return JSONResponse(result)
 
 
 def main() -> None:
     logger.info(
         f"yt-mcp 啟動：MCP=http://{config.MCP_HOST}:{config.MCP_PORT}/mcp，"
-        f"REST=/health /playlists /search /refresh，快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘"
+        f"REST=/health /playlists /search /random /refresh，快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘"
     )
     mcp.run(transport="streamable-http")
 

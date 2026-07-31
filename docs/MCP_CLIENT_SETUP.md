@@ -42,7 +42,7 @@ docker network connect ai-net <hermes 容器名>
 2. **Endpoint / Server URL**：`http://yt-music-mcp:8765/mcp`
 3. **Server Transport**：`HTTP Streamable`（若你的 n8n 版本只有 SSE 選項，請升級 n8n）
 4. **Authentication**：None
-5. 儲存後節點會自動探索到三個工具（search_songs / list_playlists / refresh_playlist），
+5. 儲存後節點會自動探索到四個工具（search_songs / random_song / list_playlists / refresh_playlist），
    Agent 的 LLM 即可自行決定何時呼叫
 
 > 備案：不想用 MCP 節點的話，用 **HTTP Request** 節點打 REST 端點也行（見下方）。
@@ -79,10 +79,12 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | 工具 | 參數 | 回傳 |
 |------|------|------|
 | `search_songs` | `keyword`（必填，≥2 字元）、`playlist`（選填，留空＝搜全部）、`limit`（預設 50） | `{keyword, searched_playlists, total_matches, returned, results: [{playlist, position, title, channel, views, url}]}` |
+| `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url}]}` |
 | `list_playlists` | 無 | 全部清單名稱與快取狀態（歌曲數、上次載入時間） |
 | `refresh_playlist` | `playlist`（留空＝重抓所有已快取清單） | `{refreshed: {清單名: 歌曲數}}` |
 
 清單名稱以 [playlists.toml](../playlists.toml) 為準（例：`YTMusic`、`Japanese`、`BGM / OST`）。
+`songs` 與 `results` 是**同一種單曲格式**，客戶端只需要認得一種形狀。
 
 ## REST 端點（非 AI 服務用）
 
@@ -91,6 +93,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `GET /health` | 存活檢查與已快取清單 |
 | `GET /playlists` | 同 `list_playlists` |
 | `GET /search?q=<關鍵字>&playlist=<清單名>&limit=<n>` | 同 `search_songs`；`playlist` 可省略 |
+| `GET /random?playlist=<清單名>&count=<n>&q=<關鍵字>` | 同 `random_song`；三個參數都可省略 |
 | `GET /refresh?playlist=<清單名>` | 同 `refresh_playlist` |
 
 範例（清單名含空格要 URL 編碼）：
@@ -98,9 +101,70 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 ```bash
 curl "http://127.0.0.1:8765/search?q=Monsters&playlist=YTMusic&limit=5"
 curl --get "http://127.0.0.1:8765/search" --data-urlencode "q=cover" --data-urlencode "playlist=Covers (Chinese)"
+
+curl "http://127.0.0.1:8765/random"                      # 從 YTMusic 抽 1 首
+curl "http://127.0.0.1:8765/random?count=3"              # 抽 3 首不重複
+curl "http://127.0.0.1:8765/random?playlist=BGM%20%2F%20OST"
+curl --get "http://127.0.0.1:8765/random" --data-urlencode "q=ヨルシカ"   # 只從命中的歌抽
 ```
 
-錯誤回應：關鍵字太短 → 400；清單名稱不存在 → 404（訊息會列出可用名稱）。
+錯誤回應：關鍵字太短、`count` 不是整數 → 400；清單名稱不存在 → 404（訊息會列出可用名稱）。
+**候選為空不是錯誤**——回 200 且 `songs: []`，客戶端檢查陣列是否為空即可。
+
+## 機器人「隨機點歌」整合（REST）
+
+`/random` 就是為這個情境做的：機器人**不需要自己維護歌單、不需要 API Key、不需要記憶體快取**，
+歌單更新也會在 TTL 內自動生效。
+
+```python
+import requests
+
+YT_API = "http://yt-music-mcp:8765"   # 容器內用服務名；主機上改 http://127.0.0.1:8765
+LOAD_FAIL_MESSAGE = "歌單暫時拿不到，稍後再試 🙏"
+
+
+class SongPicker:
+    # (連線, 讀取)：冷快取的第一次呼叫伺服器要載入整份歌單，實測約 9 秒，讀取逾時要放寬
+    TIMEOUT = (3, 30)
+
+    def choose_one_song(self, keyword: str = "") -> str:
+        params = {"count": 1}
+        if keyword:
+            params["q"] = keyword
+        try:
+            resp = requests.get(f"{YT_API}/random", params=params, timeout=self.TIMEOUT)
+            resp.raise_for_status()
+            songs = resp.json()["songs"]
+        except requests.RequestException as e:
+            print(f"[{self.__class__.__name__}] 取歌失敗，之後使用時會再重試：{e}")
+            return LOAD_FAIL_MESSAGE
+        if not songs:
+            return LOAD_FAIL_MESSAGE
+        return songs[0]["url"]
+
+    def warm_up(self) -> None:
+        """機器人啟動時呼叫：先讓伺服器把歌單載進快取，第一位使用者就不用等那 9 秒。"""
+        try:
+            requests.get(f"{YT_API}/random", timeout=(3, 60))
+        except requests.RequestException as e:
+            print(f"暖機失敗（不影響後續使用，屆時第一次點歌會慢一點）：{e}")
+```
+
+對照舊寫法：`ensure_loaded()` 那套「本地載入歌單 ＋ 失敗留待下次重試」不再需要——
+載入、快取、重試、配額記帳全部由伺服器負責，機器人端只剩一次 HTTP GET。
+
+實測效能：冷快取首呼 **8.5 秒**（載入 1,021 首），之後每次 **約 65 毫秒**、**0 配額**。
+
+**想避免連續抽到同一首**：`/random` 每次獨立抽選，不記得抽過什麼（無狀態才能讓多個 agent 共用）。
+需要「最近不重複」的話，兩種做法擇一：
+
+```python
+# A. 一次抽一批，機器人端慢慢發（最省事）
+songs = requests.get(f"{YT_API}/random", params={"count": 10}, timeout=(3, 30)).json()["songs"]
+
+# B. 機器人端記最近播過的 URL，抽到重複就重抽
+recent = collections.deque(maxlen=20)
+```
 
 ## 快取與配額行為
 

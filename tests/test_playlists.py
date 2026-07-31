@@ -81,6 +81,7 @@ class TestPlaylistsLoader(unittest.TestCase):
         self.assertEqual(len(playlists.sorter_playlists()), 13)
         playlists.tool_target("playlist_search")
         playlists.tool_target("duplicate_finder")
+        playlists.tool_target("random_song")
 
 
 if __name__ == "__main__":

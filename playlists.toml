@@ -1,5 +1,5 @@
 # 播放清單設定：所有工具共用，改這裡即可、不用動程式碼。
-# - 換搜尋／重複偵測的目標清單：改對應區段的 target 字串（名稱須存在於 [playlists]）
+# - 換搜尋／重複偵測／抽歌的目標清單：改對應區段的 target 字串（名稱須存在於 [playlists]）
 # - 調整每日排序的清單集合與順序：改 [sorter].order（建議由小到大，配額耗盡前小清單先完成）
 
 [playlists]
@@ -39,4 +39,8 @@ order = [
 target = "YTMusic"
 
 [duplicate_finder]
+target = "YTMusic"
+
+# yt-mcp 抽歌端點（/random、random_song）未指定清單時的預設來源
+[random_song]
 target = "YTMusic"
