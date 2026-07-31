@@ -55,6 +55,9 @@ MCP_CACHE_TTL_MINUTES = int(os.environ.get("MCP_CACHE_TTL_MINUTES", "360"))  # �
 # CLI 工具查詢 yt-mcp 伺服器的位址（走快取，0 配額）
 MCP_BASE_URL = os.environ.get("MCP_BASE_URL", f"http://127.0.0.1:{MCP_PORT}")
 
+# 發燒影片榜的預設地區（ISO 3166-1 alpha-2 國碼）；TW＝台灣榜，非全球榜
+TRENDING_REGION = os.environ.get("TRENDING_REGION", "TW")
+
 # ── 檔案日誌 ─────────────────────────────────────
 # 不同程序（主機工具／排序容器）應寫不同檔案，避免同時輪替互相干擾
 LOG_FILE_NAME = os.environ.get("LOG_FILE_NAME", "youtube_toolkit.log")

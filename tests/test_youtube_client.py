@@ -52,12 +52,15 @@ class FakePlaylistItems:
 
 
 class FakeVideos:
-    def __init__(self, details_by_id, list_calls):
+    def __init__(self, details_by_id, list_calls, chart_items=None):
         self._details_by_id = details_by_id
+        self._chart_items = chart_items or []
         self.list_calls = list_calls
 
     def list(self, **kwargs):
         self.list_calls.append(kwargs)
+        if "chart" in kwargs:  # 發燒榜：不是依 id 查，直接回榜單
+            return FakeRequest({"items": self._chart_items})
         requested_ids = kwargs["id"].split(",")
         items = [self._details_by_id[vid] for vid in requested_ids if vid in self._details_by_id]
         return FakeRequest({"items": items})
@@ -73,13 +76,13 @@ class FakeSearch:
 
 
 class FakeService:
-    def __init__(self, pages=None, details_by_id=None):
+    def __init__(self, pages=None, details_by_id=None, chart_items=None):
         self.update_calls = []
         self.delete_calls = []
         self.videos_list_calls = []
         self.search_calls = []
         self._playlist_items = FakePlaylistItems(pages or [], self.update_calls, self.delete_calls)
-        self._videos = FakeVideos(details_by_id or {}, self.videos_list_calls)
+        self._videos = FakeVideos(details_by_id or {}, self.videos_list_calls, chart_items)
         self._search = FakeSearch(self.search_calls)
 
     def playlistItems(self):
@@ -133,6 +136,37 @@ class TestFetchPlaylistEntries(unittest.TestCase):
     def test_quota_charged_per_page(self):
         self.client.fetch_playlist_entries("PL-test")
         self.assertEqual(self.quota.used, 2 * QuotaCost.LIST)
+
+
+class TestFetchMostPopular(unittest.TestCase):
+    def setUp(self):
+        self.service = FakeService(chart_items=[{"id": "hot1"}, {"id": "hot2"}])
+        self.quota = QuotaManager(daily_limit=100, soft_limit=80)
+        self.client = YouTubeClient(self.service, self.quota)
+
+    def test_sends_chart_and_region(self):
+        self.client.fetch_most_popular("TW", 3)
+        params = self.service.videos_list_calls[0]
+
+        self.assertEqual(params["chart"], "mostPopular")
+        self.assertEqual(params["regionCode"], "TW")
+        self.assertEqual(params["maxResults"], 3)
+        self.assertNotIn("videoCategoryId", params)  # 沒指定類別就不要送這個參數
+
+    def test_category_id_is_forwarded(self):
+        self.client.fetch_most_popular("TW", 3, "10")
+        self.assertEqual(self.service.videos_list_calls[0]["videoCategoryId"], "10")
+
+    def test_max_results_capped_at_api_page_limit(self):
+        self.client.fetch_most_popular("TW", 999)
+        self.assertEqual(self.service.videos_list_calls[0]["maxResults"], 50)
+
+    def test_costs_one_unit(self):
+        self.client.fetch_most_popular("TW", 3)
+        self.assertEqual(self.quota.used, QuotaCost.LIST)  # 整份榜單只要 1 unit
+
+    def test_returns_raw_items_for_the_trending_module_to_shape(self):
+        self.assertEqual(self.client.fetch_most_popular("TW", 3), [{"id": "hot1"}, {"id": "hot2"}])
 
 
 class TestFetchVideoDetails(unittest.TestCase):

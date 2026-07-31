@@ -1,7 +1,14 @@
 # yt-mcp 客戶端設定指南
 
-`yt-mcp` 是歌單搜尋的 **MCP + REST 雙介面伺服器**（唯讀、API Key 認證），
+`yt-mcp` 是 YouTube 唯讀查詢的 **MCP + REST 雙介面伺服器**（API Key 認證），
 以 Docker 容器 `yt-music-mcp` 長駐執行。本文件說明各種客戶端怎麼接上來。
+
+**伺服器提供兩類來源完全不同的資料，別混用：**
+
+| | 資料來源 | 工具／端點 | 配額 |
+|---|---------|-----------|------|
+| 🎵 | **使用者自己的播放清單** | `search_songs`／`random_song`／`/search`／`/random` | 載入後查詢 0 units |
+| 🔥 | **YouTube 官方公開榜單**（發燒影片） | `trending_videos`／`/trending` | 即時查詢，1 unit／次 |
 
 ## 端點總覽
 
@@ -80,6 +87,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 |------|------|------|
 | `search_songs` | `keyword`（必填，≥2 字元）、`playlist`（選填，留空＝搜全部）、`limit`（預設 50） | `{keyword, searched_playlists, total_matches, returned, results: [{playlist, position, title, channel, views, url}]}` |
 | `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url}]}` |
+| `trending_videos` | `category`（預設 all）、`limit`（1～50，預設 3）、`region`（預設 TW） | `{source, region, category, returned, videos: [{rank, title, channel, views, likes, published_at, duration, duration_seconds, is_live, category_id, url}]}` |
 | `list_playlists` | 無 | 全部清單名稱與快取狀態（歌曲數、上次載入時間） |
 | `refresh_playlist` | `playlist`（留空＝重抓所有已快取清單） | `{refreshed: {清單名: 歌曲數}}` |
 
@@ -94,6 +102,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `GET /playlists` | 同 `list_playlists` |
 | `GET /search?q=<關鍵字>&playlist=<清單名>&limit=<n>` | 同 `search_songs`；`playlist` 可省略 |
 | `GET /random?playlist=<清單名>&count=<n>&q=<關鍵字>` | 同 `random_song`；三個參數都可省略 |
+| `GET /trending?category=<類別>&limit=<n>&region=<國碼>` | 同 `trending_videos`；三個參數都可省略 |
 | `GET /refresh?playlist=<清單名>` | 同 `refresh_playlist` |
 
 範例（清單名含空格要 URL 編碼）：
@@ -110,6 +119,48 @@ curl --get "http://127.0.0.1:8765/random" --data-urlencode "q=ヨルシカ"   # 
 
 錯誤回應：關鍵字太短、`count` 不是整數 → 400；清單名稱不存在 → 404（訊息會列出可用名稱）。
 **候選為空不是錯誤**——回 200 且 `songs: []`，客戶端檢查陣列是否為空即可。
+
+## 🔥 發燒影片榜（`/trending`）
+
+YouTube 官方 Trending 榜，**公開的地區榜單，與使用者的播放清單無關**。
+預設回**台灣榜前 3 名**（`regionCode=TW` 拿到的就只有台灣榜，不是全球榜）。
+
+```bash
+curl "http://127.0.0.1:8765/trending"                    # TW 全類別前 3
+curl "http://127.0.0.1:8765/trending?category=music"     # TW 音樂類前 3
+curl "http://127.0.0.1:8765/trending?category=gaming&limit=5"
+curl "http://127.0.0.1:8765/trending?region=JP&category=music"
+```
+
+類別：`all`／`music`／`gaming`／`film`／`sports`／`comedy`／`entertainment`／`news`／`tech`，
+也可直接給 `videoCategoryId` 數字。預設地區可用 `.env` 的 `TRENDING_REGION` 改。
+
+回傳範例（實測）：
+
+```json
+{
+  "source": "YouTube 發燒影片（官方公開榜單，非使用者的播放清單）",
+  "region": "TW", "category": "music", "returned": 3,
+  "videos": [{
+    "rank": 1,
+    "title": "JENNIE - Less than a Lover (Official Video)",
+    "channel": "JennieRubyJaneVEVO",
+    "views": 14386857, "likes": 1095026,
+    "published_at": "2026-07-24",
+    "duration": "3:39", "duration_seconds": 219,
+    "is_live": false, "category_id": "10",
+    "url": "https://youtu.be/..."
+  }]
+}
+```
+
+- `likes` 可能是 `null`（頻道隱藏讚數），**不要當成 0**
+- `duration_seconds` 與 `is_live` 是給你濾掉實況存檔用的——發燒榜常出現數小時的直播回放
+  （實測遊戲類第 2 名就是 `5:41:03` 的 LCK 賽事）
+- **不快取**：1 unit／次，榜單約 15 分鐘換一批，即時查最準
+
+錯誤回應：類別名稱打錯 → 400（會列出可用名稱）；
+**該地區沒有這個類別的榜** → 404（實測 TW 的類別 29 就沒有榜）。
 
 ## 機器人「隨機點歌」整合（REST）
 

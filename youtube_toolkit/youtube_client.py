@@ -175,6 +175,31 @@ class YouTubeClient:
             )
         return videos
 
+    def fetch_most_popular(
+        self, region_code: str, max_results: int, category_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """抓取指定地區的發燒影片榜（videos.list chart=mostPopular，成本 1 unit）。
+
+        回傳原始 API items（整形交給 trending 模組），最多 50 筆——這是單頁上限，
+        再多要分頁而榜單前 50 名以外意義不大。category_id 留空＝不分類別。
+
+        注意：類別 ID 合法不代表該地區有榜（實測 TW 的 29 非營利回 404、
+        不存在的 ID 回 400），呼叫端需自行處理 HttpError。
+        """
+        params: Dict[str, Any] = {
+            "part": "snippet,statistics,contentDetails",
+            "chart": "mostPopular",
+            "regionCode": region_code,
+            "maxResults": min(max_results, MAX_RESULTS_PER_PAGE),
+        }
+        if category_id:
+            params["videoCategoryId"] = category_id
+        request = self._service.videos().list(**params)
+        response = self._execute_with_retry(
+            request, QuotaCost.LIST, f"videos.list (mostPopular {region_code}/{category_id or 'all'})"
+        )
+        return response.get("items", [])
+
     # ── 寫入 ──────────────────────────────────────────────
 
     def move_playlist_item(

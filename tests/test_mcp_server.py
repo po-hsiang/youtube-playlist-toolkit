@@ -8,6 +8,7 @@ from youtube_toolkit.mcp_server import (
     perform_random,
     perform_refresh,
     perform_search,
+    perform_trending,
     playlists_overview,
     random_target_names,
 )
@@ -247,6 +248,72 @@ class TestPerformRandom(unittest.TestCase):
         with self.assertRaises(KeyError) as ctx:
             perform_random(playlist="不存在的清單", cache=self._cache())
         self.assertIn("可用名稱", str(ctx.exception))
+
+
+class FakeTrendingClient:
+    """記錄 fetch_most_popular 收到的參數，回傳固定榜單。"""
+
+    def __init__(self, items=None):
+        self._items = items if items is not None else [{"id": "hot1"}, {"id": "hot2"}]
+        self.calls = []
+
+    def fetch_most_popular(self, region_code, max_results, category_id=""):
+        self.calls.append({"region": region_code, "limit": max_results, "category_id": category_id})
+        return self._items[:max_results]
+
+
+class TestPerformTrending(unittest.TestCase):
+    def test_defaults_to_taiwan_all_categories_top_three(self):
+        client = FakeTrendingClient()
+
+        result = perform_trending(client=client)
+
+        self.assertEqual(client.calls[0], {"region": "TW", "limit": 3, "category_id": ""})
+        self.assertEqual(result["region"], "TW")
+        self.assertEqual(result["category"], "all")
+
+    def test_friendly_category_is_translated_to_id(self):
+        client = FakeTrendingClient()
+
+        perform_trending(category="music", client=client)
+        perform_trending(category="gaming", client=client)
+
+        self.assertEqual(client.calls[0]["category_id"], "10")
+        self.assertEqual(client.calls[1]["category_id"], "20")
+
+    def test_category_is_normalised_before_lookup(self):
+        client = FakeTrendingClient()
+        result = perform_trending(category="  MUSIC ", client=client)
+
+        self.assertEqual(client.calls[0]["category_id"], "10")
+        self.assertEqual(result["category"], "music")
+
+    def test_region_is_upper_cased(self):
+        client = FakeTrendingClient()
+        perform_trending(region="jp", client=client)
+        self.assertEqual(client.calls[0]["region"], "JP")
+
+    def test_limit_is_clamped_to_valid_range(self):
+        client = FakeTrendingClient(items=[{"id": f"v{i}"} for i in range(60)])
+
+        perform_trending(limit=0, client=client)
+        perform_trending(limit=999, client=client)
+
+        self.assertEqual(client.calls[0]["limit"], 1)
+        self.assertEqual(client.calls[1]["limit"], 50)
+
+    def test_unknown_category_raises_with_valid_options(self):
+        with self.assertRaises(ValueError) as ctx:
+            perform_trending(category="音樂", client=FakeTrendingClient())
+        self.assertIn("music", str(ctx.exception))
+
+    def test_result_is_ranked_and_labelled_as_public_chart(self):
+        client = FakeTrendingClient()
+
+        result = perform_trending(limit=2, client=client)
+
+        self.assertEqual([v["rank"] for v in result["videos"]], [1, 2])
+        self.assertIn("非使用者的播放清單", result["source"])
 
 
 if __name__ == "__main__":

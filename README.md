@@ -43,7 +43,8 @@ youtube_api/
 │   ├── auth.py                 # 認證中心：API Key / OAuth（JSON 憑證快取）
 │   ├── youtube_client.py       # 共用資料存取層（帶配額記帳）
 │   ├── sorting.py              # LIS 最少搬移計畫（純函式）
-│   ├── song_search.py          # 歌曲比對核心（MCP 伺服器與 CLI 共用）
+│   ├── song_search.py          # 歌曲比對／隨機抽選核心（MCP 伺服器與 CLI 共用）
+│   ├── trending.py             # 發燒影片榜的類別對照與整形（純函式）
 │   ├── log_utils.py            # 彩色 logging
 │   ├── quota_manager.py        # API 配額管理（軟/硬上限）
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
@@ -52,7 +53,7 @@ youtube_api/
 │   ├── video_search.py         # 🌐 search.list API 包裝
 │   ├── playlist_health.py      # 🩺 清單健康檢查（私人/已刪除/不公開）
 │   ├── playlist_cleaner.py     # ✂️ 失效影片清除（dry-run 預設、留底）
-│   └── mcp_server.py           # 🔌 MCP + REST 伺服器（快取、唯讀）
+│   └── mcp_server.py           # 🔌 MCP + REST 伺服器（歌單快取 + 發燒榜，唯讀）
 ├── tests/                      # 單元測試（標準庫 unittest，無額外依賴）
 │   ├── test_sorting.py         #    LIS 與搬移計畫的數學正確性
 │   ├── test_youtube_client.py  #    分頁、防呆、配額記帳（假 service）
@@ -326,17 +327,26 @@ uv run yt-mcp                       # 或本機直接跑
 ```
 
 - **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`
-  工具：`search_songs`／`random_song`／`list_playlists`／`refresh_playlist`
-- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/playlists`、`/refresh`、`/health`
-- 清單載入一次後**常駐記憶體快取**（TTL 6 小時），查詢不耗 YouTube 配額；抓取經 QuotaManager 與其他工具合併記帳
+  工具：`search_songs`／`random_song`／`trending_videos`／`list_playlists`／`refresh_playlist`
+- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/trending?category=...`、`/playlists`、`/refresh`、`/health`
 - **唯讀**：不暴露任何寫入功能；埠只映射到宿主機 `127.0.0.1`，容器間走 `ai-net` 網路
 
-隨機抽歌（給聊天機器人點歌用，`playlist` 省略時取 `playlists.toml` 的 `[random_song].target`）：
+提供**兩類來源不同的資料**（工具描述已寫明差異，避免 agent 叫錯）：
+
+| 來源 | 端點 | 快取與配額 |
+|------|------|-----------|
+| 🎵 使用者自己的播放清單 | `/search`、`/random` | 載入一次後常駐記憶體（TTL 6 小時），查詢 **0 配額** |
+| 🔥 YouTube 官方發燒影片榜 | `/trending` | 不快取，**1 unit／次** |
 
 ```bash
-curl "http://127.0.0.1:8765/random"           # 抽 1 首 → {"songs": [{title, channel, url, ...}]}
-curl "http://127.0.0.1:8765/random?count=3"   # 抽 3 首不重複（上限 10）
+curl "http://127.0.0.1:8765/random"           # 從歌單抽 1 首（上限 10 首）
+curl "http://127.0.0.1:8765/random?count=3"
+
+curl "http://127.0.0.1:8765/trending"                 # 台灣發燒榜前 3
+curl "http://127.0.0.1:8765/trending?category=music"  # all/music/gaming/film/sports/...
 ```
+
+抓取一律經 QuotaManager 與其他工具合併記帳。發燒榜預設地區可用 `.env` 的 `TRENDING_REGION` 改（預設 `TW`＝台灣榜，不是全球榜）。
 
 > 客戶端（n8n MCP Client Tool 節點、Hermes、機器人點歌範例、curl）完整設定見
 > **[docs/MCP_CLIENT_SETUP.md](docs/MCP_CLIENT_SETUP.md)**。

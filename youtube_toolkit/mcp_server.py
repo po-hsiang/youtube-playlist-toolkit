@@ -1,14 +1,20 @@
-"""yt-mcp：把歌單搜尋開放給多個 AI Agent 同時查詢的 MCP ＋ REST 伺服器。
+"""yt-mcp：把 YouTube 唯讀查詢開放給多個 AI Agent 同時使用的 MCP ＋ REST 伺服器。
+
+**提供兩類來源完全不同的資料**，工具描述刻意寫明差異，避免 agent 叫錯工具：
+
+1. **使用者自己的播放清單**——search_songs／random_song／list_playlists／refresh_playlist
+   走記憶體快取，載入後查詢 0 配額。
+2. **YouTube 官方公開榜單**——trending_videos（發燒影片）
+   即時查詢、不快取，1 unit／次。與使用者的播放清單無關。
 
 - MCP 端點（Streamable HTTP）：http://<host>:<port>/mcp
-  工具：search_songs / random_song / list_playlists / refresh_playlist
-- REST 端點（給非 AI 服務，與 MCP 共用同一份快取）：
+- REST 端點（給非 AI 服務，與 MCP 共用同一份快取與 client）：
   GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、
-  GET /random?playlist=...&count=...&q=...、GET /refresh?playlist=...
+  GET /random?playlist=...&count=...&q=...、GET /trending?category=...&limit=...&region=...、
+  GET /refresh?playlist=...
 - 安全邊界：只用 API Key、**唯讀**——不暴露任何寫入功能（排序／清除只能在本機手動執行）。
-- 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓；
-  之後所有查詢都是本地搜尋、不耗 YouTube 配額。抓取一律經 QuotaManager 記帳
-  （與其他工具共用 quota_state.json，合併計算）。
+- 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓。
+  抓取一律經 QuotaManager 記帳（與其他工具共用 quota_state.json，合併計算）。
 
 執行方式：uv run yt-mcp（設定見 .env 的 MCP_HOST / MCP_PORT / MCP_CACHE_TTL_MINUTES）
 """
@@ -20,11 +26,12 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from anyio import to_thread
+from googleapiclient.errors import HttpError
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from youtube_toolkit import config, playlists
+from youtube_toolkit import config, playlists, trending
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.song_search import (
     DEFAULT_LIMIT,
@@ -40,6 +47,22 @@ DEFAULT_RESULT_LIMIT = DEFAULT_LIMIT
 ALL_PLAYLISTS = "*"  # playlist 參數傳這個＝跨所有清單
 RANDOM_TARGET_SECTION = "random_song"  # playlists.toml 中抽歌預設清單的區段名
 
+_CLIENT: Optional[YouTubeClient] = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def shared_client() -> YouTubeClient:
+    """全伺服器共用同一個 client（延遲建立：匯入模組時不觸發 API Key 檢查）。
+
+    **必須共用**：QuotaManager 只在建構時載入狀態檔，兩個實例會各記各的計數、
+    互相覆蓋 quota_state.json，導致配額被低估。
+    """
+    global _CLIENT
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            _CLIENT = YouTubeClient.for_public_data()
+        return _CLIENT
+
 
 class SongCache:
     """執行緒安全的清單快取：載入一次、TTL 內重複查詢不耗配額。"""
@@ -52,10 +75,7 @@ class SongCache:
 
     @property
     def client(self) -> YouTubeClient:
-        # 延遲建立：匯入模組（例如跑測試）時不觸發 API Key 檢查
-        if self._client is None:
-            self._client = YouTubeClient.for_public_data()
-        return self._client
+        return self._client or shared_client()
 
     def get_videos(self, name: str, force: bool = False) -> List[Dict[str, Any]]:
         playlist_id = playlists.get_playlist_id(name)  # 名稱不存在會拋 KeyError（含可用名稱）
@@ -121,6 +141,26 @@ def perform_random(
     return pick_random_songs(random_target_names(playlist), cache.get_videos, count, keyword, rng)
 
 
+def perform_trending(
+    category: str = "all",
+    limit: int = trending.DEFAULT_LIMIT,
+    region: str = "",
+    client: Optional[YouTubeClient] = None,
+) -> Dict[str, Any]:
+    """查發燒影片榜。
+
+    **刻意不快取**：成本只有 1 unit，而榜單約每 15 分鐘就換一批——
+    快取省不了什麼，卻會回過期的名次。未知類別會拋 ValueError。
+    """
+    category = (category or "all").strip().lower()
+    category_id = trending.resolve_category(category)
+    region = (region or config.TRENDING_REGION).strip().upper()
+    limit = max(1, min(int(limit), trending.MAX_LIMIT))
+
+    items = (client or shared_client()).fetch_most_popular(region, limit, category_id)
+    return trending.build_result(region, category, items)
+
+
 def playlists_overview(cache: Optional[SongCache] = None) -> Dict[str, Any]:
     cache = cache or CACHE
     cached = cache.status()
@@ -173,6 +213,23 @@ def random_song(
     抽選走本地快取，不耗 YouTube API 配額；候選為空時 songs 會是空陣列。
     """
     return perform_random(playlist, count, keyword)
+
+
+@mcp.tool()
+def trending_videos(
+    category: str = "all", limit: int = trending.DEFAULT_LIMIT, region: str = ""
+) -> Dict[str, Any]:
+    """查 YouTube 官方發燒影片榜（Trending）。
+
+    ⚠️ 這是**公開的地區榜單，與使用者自己的播放清單無關**——
+    要找使用者收藏的歌請改用 search_songs 或 random_song。
+
+    category：all／music／gaming／film／sports／comedy／entertainment／news／tech（預設 all）。
+    limit：取前幾名（1～50，預設 3）。
+    region：ISO 3166-1 兩碼國碼，預設 TW（台灣榜，不是全球榜）。
+    即時查詢不走快取，成本 1 unit；部分地區沒有某些類別的榜單。
+    """
+    return perform_trending(category, limit, region)
 
 
 @mcp.tool()
@@ -247,6 +304,28 @@ async def rest_random(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/trending", methods=["GET"])
+async def rest_trending(request: Request) -> JSONResponse:
+    category = request.query_params.get("category", "all")
+    region = request.query_params.get("region", "")
+    try:
+        limit = _int_param(request, "limit", trending.DEFAULT_LIMIT)
+        result = await to_thread.run_sync(partial(perform_trending, category, limit, region))
+    except (BadRequest, ValueError) as e:
+        return _error_response(e, 400)
+    except HttpError as e:
+        # 類別 ID 合法不代表該地區有榜（實測 TW 的 29 回 404、不存在的 ID 回 400），
+        # 這兩種都是「查不到」而非伺服器錯誤，不能讓 agent 收到 500。
+        return JSONResponse(
+            {
+                "error": f"查不到 {region or config.TRENDING_REGION} 的「{category}」發燒榜"
+                f"（YouTube 回 HTTP {e.resp.status}）。請改用 all 或換一個類別／地區。"
+            },
+            status_code=404,
+        )
+    return JSONResponse(result)
+
+
 @mcp.custom_route("/refresh", methods=["GET", "POST"])
 async def rest_refresh(request: Request) -> JSONResponse:
     playlist = request.query_params.get("playlist", "")
@@ -260,7 +339,8 @@ async def rest_refresh(request: Request) -> JSONResponse:
 def main() -> None:
     logger.info(
         f"yt-mcp 啟動：MCP=http://{config.MCP_HOST}:{config.MCP_PORT}/mcp，"
-        f"REST=/health /playlists /search /random /refresh，快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘"
+        f"REST=/health /playlists /search /random /trending /refresh，"
+        f"快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘，發燒榜地區 {config.TRENDING_REGION}"
     )
     mcp.run(transport="streamable-http")
 
