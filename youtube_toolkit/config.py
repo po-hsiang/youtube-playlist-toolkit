@@ -5,14 +5,9 @@
 """
 
 import os
-import sys
 from pathlib import Path
 
-# PyInstaller 打包後 __file__ 位於暫存目錄，改以執行檔所在位置為根目錄
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).resolve().parent
-else:
-    BASE_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = Path(__file__).resolve().parents[1]
 
 ENV_FILE = BASE_DIR / ".env"
 SECRETS_DIR = BASE_DIR / "secrets"

@@ -81,7 +81,6 @@ youtube_api/
 ├── .env                        # ⚠️ 機敏設定（已被 .gitignore 排除）
 ├── .env.example                # .env 範本（可安全入版控）
 ├── .gitignore
-├── playlist_search.spec        # PyInstaller 打包設定
 ├── pyproject.toml              # 專案設定（PEP 621，由 uv 管理）
 ├── .python-version             # uv 鎖定的 Python 版本（3.12）
 ├── uv.lock                     # uv 依賴鎖定檔
@@ -367,20 +366,6 @@ YouTube Data API 免費配額為 **每日 10,000 units**（太平洋時間午夜
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
-
----
-
-## 打包為 Windows 執行檔
-
-使用 PyInstaller 將歌單搜尋工具打包成單一執行檔：
-
-```bash
-uv run --with pyinstaller pyinstaller playlist_search.spec
-# 產物：dist/playlist_search.exe
-```
-
-> 部署時請將 `.env` 與 `secrets/` 目錄放在 exe **旁邊**（打包後程式會以執行檔所在目錄為根目錄尋找設定）。
-> 舊的 `dist/main.exe` 為重構前（2024-02）的產物，已過時。
 
 ---
 
