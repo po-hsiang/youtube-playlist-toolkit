@@ -4,14 +4,14 @@
 
 1. **使用者自己的播放清單**——search_songs／random_song／list_playlists／refresh_playlist
    走記憶體快取，載入後查詢 0 配額。
-2. **YouTube 官方公開榜單**——trending_videos（發燒影片）
+2. **YouTube 公開資料**——trending_videos（發燒影片榜）、get_video_info（單片中繼資料）
    即時查詢、不快取，1 unit／次。與使用者的播放清單無關。
 
 - MCP 端點（Streamable HTTP）：http://<host>:<port>/mcp
 - REST 端點（給非 AI 服務，與 MCP 共用同一份快取與 client）：
   GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、
   GET /random?playlist=...&count=...&q=...、GET /trending?category=...&limit=...&region=...、
-  GET /refresh?playlist=...
+  GET /video/{video_id}、GET /refresh?playlist=...
 - 安全邊界：只用 API Key、**唯讀**——不暴露任何寫入功能（排序／清除只能在本機手動執行）。
 - 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓。
   抓取一律經 QuotaManager 記帳（與其他工具共用 quota_state.json，合併計算）。
@@ -31,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from youtube_toolkit import config, playlists, trending
+from youtube_toolkit import config, playlists, trending, video_info
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.song_search import (
     DEFAULT_LIMIT,
@@ -161,6 +161,20 @@ def perform_trending(
     return trending.build_result(region, category, items)
 
 
+def perform_video_info(video_id: str, client: Optional[YouTubeClient] = None) -> Dict[str, Any]:
+    """查單一影片的中繼資料（1 unit，不快取——下游要拿它判斷「現在」是不是直播）。
+
+    video_id 格式不合法拋 ValueError、查無影片（含私人）拋 KeyError，
+    args[0] 皆為契約錯誤碼字串（INVALID_VIDEO_ID / VIDEO_NOT_FOUND）。
+    """
+    if not video_info.is_valid_video_id(video_id):
+        raise ValueError(video_info.INVALID_VIDEO_ID)
+    item = (client or shared_client()).fetch_video(video_id)
+    if item is None:
+        raise KeyError(video_info.VIDEO_NOT_FOUND)
+    return video_info.to_video_info(item)
+
+
 def playlists_overview(cache: Optional[SongCache] = None) -> Dict[str, Any]:
     cache = cache or CACHE
     cached = cache.status()
@@ -230,6 +244,21 @@ def trending_videos(
     即時查詢不走快取，成本 1 unit；部分地區沒有某些類別的榜單。
     """
     return perform_trending(category, limit, region)
+
+
+@mcp.tool()
+def get_video_info(video_id: str) -> Dict[str, Any]:
+    """查單一 YouTube 影片的中繼資料（時長、是否直播中、觀看數、縮圖）。
+
+    用途：播放前的時長預檢、婉拒直播、組 embed 呈現。任何公開影片都可查，
+    不限於使用者的播放清單。video_id 是網址 watch?v= 後面的 11 碼。
+    即時查詢不走快取，成本 1 unit。
+    錯誤以 {"error": "INVALID_VIDEO_ID"|"VIDEO_NOT_FOUND"} 回傳（私人影片視同查無）。
+    """
+    try:
+        return perform_video_info(video_id)
+    except (ValueError, KeyError) as e:
+        return {"error": e.args[0]}
 
 
 @mcp.tool()
@@ -304,6 +333,18 @@ async def rest_random(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status)
 
 
+@mcp.custom_route("/video/{video_id}", methods=["GET"])
+async def rest_video(request: Request) -> JSONResponse:
+    video_id = request.path_params["video_id"]
+    try:
+        result = await to_thread.run_sync(partial(perform_video_info, video_id))
+    except ValueError as e:
+        return _error_response(e, 400)  # {"error": "INVALID_VIDEO_ID"}
+    except KeyError as e:
+        return _error_response(e, 404)  # {"error": "VIDEO_NOT_FOUND"}
+    return JSONResponse(result)
+
+
 @mcp.custom_route("/trending", methods=["GET"])
 async def rest_trending(request: Request) -> JSONResponse:
     category = request.query_params.get("category", "all")
@@ -339,7 +380,7 @@ async def rest_refresh(request: Request) -> JSONResponse:
 def main() -> None:
     logger.info(
         f"yt-mcp 啟動：MCP=http://{config.MCP_HOST}:{config.MCP_PORT}/mcp，"
-        f"REST=/health /playlists /search /random /trending /refresh，"
+        f"REST=/health /playlists /search /random /trending /video/{{id}} /refresh，"
         f"快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘，發燒榜地區 {config.TRENDING_REGION}"
     )
     mcp.run(transport="streamable-http")

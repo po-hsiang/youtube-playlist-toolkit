@@ -45,6 +45,7 @@ youtube_api/
 │   ├── sorting.py              # LIS 最少搬移計畫（純函式）
 │   ├── song_search.py          # 歌曲比對／隨機抽選核心（MCP 伺服器與 CLI 共用）
 │   ├── trending.py             # 發燒影片榜的類別對照與整形（純函式）
+│   ├── video_info.py           # 單片中繼資料的驗證與整形（純函式，跨服務契約）
 │   ├── log_utils.py            # 彩色 logging
 │   ├── quota_manager.py        # API 配額管理（軟/硬上限）
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
@@ -327,8 +328,8 @@ uv run yt-mcp                       # 或本機直接跑
 ```
 
 - **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`
-  工具：`search_songs`／`random_song`／`trending_videos`／`list_playlists`／`refresh_playlist`
-- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/trending?category=...`、`/playlists`、`/refresh`、`/health`
+  工具：`search_songs`／`random_song`／`trending_videos`／`get_video_info`／`list_playlists`／`refresh_playlist`
+- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/trending?category=...`、`/video/{video_id}`、`/playlists`、`/refresh`、`/health`
 - **唯讀**：不暴露任何寫入功能；埠只映射到宿主機 `127.0.0.1`，容器間走 `ai-net` 網路
 
 提供**兩類來源不同的資料**（工具描述已寫明差異，避免 agent 叫錯）：
@@ -336,7 +337,7 @@ uv run yt-mcp                       # 或本機直接跑
 | 來源 | 端點 | 快取與配額 |
 |------|------|-----------|
 | 🎵 使用者自己的播放清單 | `/search`、`/random` | 載入一次後常駐記憶體（TTL 6 小時），查詢 **0 配額** |
-| 🔥 YouTube 官方發燒影片榜 | `/trending` | 不快取，**1 unit／次** |
+| 🔥 YouTube 公開資料（發燒榜、單片查詢） | `/trending`、`/video/{video_id}` | 不快取，**1 unit／次** |
 
 ```bash
 curl "http://127.0.0.1:8765/random"           # 從歌單抽 1 首（上限 10 首）
@@ -344,6 +345,8 @@ curl "http://127.0.0.1:8765/random?count=3"
 
 curl "http://127.0.0.1:8765/trending"                 # 台灣發燒榜前 3
 curl "http://127.0.0.1:8765/trending?category=music"  # all/music/gaming/film/sports/...
+
+curl "http://127.0.0.1:8765/video/dQw4w9WgXcQ"        # 單片中繼資料：時長／是否直播中／觀看數／縮圖
 ```
 
 抓取一律經 QuotaManager 與其他工具合併記帳。發燒榜預設地區可用 `.env` 的 `TRENDING_REGION` 改（預設 `TW`＝台灣榜，不是全球榜）。

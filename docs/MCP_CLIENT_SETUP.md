@@ -8,7 +8,7 @@
 | | 資料來源 | 工具／端點 | 配額 |
 |---|---------|-----------|------|
 | 🎵 | **使用者自己的播放清單** | `search_songs`／`random_song`／`/search`／`/random` | 載入後查詢 0 units |
-| 🔥 | **YouTube 官方公開榜單**（發燒影片） | `trending_videos`／`/trending` | 即時查詢，1 unit／次 |
+| 🔥 | **YouTube 公開資料**（發燒榜、單片查詢） | `trending_videos`／`get_video_info`／`/trending`／`/video/{id}` | 即時查詢，1 unit／次 |
 
 ## 端點總覽
 
@@ -88,6 +88,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `search_songs` | `keyword`（必填，≥2 字元）、`playlist`（選填，留空＝搜全部）、`limit`（預設 50） | `{keyword, searched_playlists, total_matches, returned, results: [{playlist, position, title, channel, views, url}]}` |
 | `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url}]}` |
 | `trending_videos` | `category`（預設 all）、`limit`（1～50，預設 3）、`region`（預設 TW） | `{source, region, category, returned, videos: [{rank, title, channel, views, likes, published_at, duration, duration_seconds, is_live, category_id, url}]}` |
+| `get_video_info` | `video_id`（必填，11 碼） | `{video_id, title, channel, published_at, duration, duration_seconds, is_live, views, thumbnail_url, url}`；錯誤回 `{error: "INVALID_VIDEO_ID"\|"VIDEO_NOT_FOUND"}` |
 | `list_playlists` | 無 | 全部清單名稱與快取狀態（歌曲數、上次載入時間） |
 | `refresh_playlist` | `playlist`（留空＝重抓所有已快取清單） | `{refreshed: {清單名: 歌曲數}}` |
 
@@ -103,6 +104,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `GET /search?q=<關鍵字>&playlist=<清單名>&limit=<n>` | 同 `search_songs`；`playlist` 可省略 |
 | `GET /random?playlist=<清單名>&count=<n>&q=<關鍵字>` | 同 `random_song`；三個參數都可省略 |
 | `GET /trending?category=<類別>&limit=<n>&region=<國碼>` | 同 `trending_videos`；三個參數都可省略 |
+| `GET /video/{video_id}` | 同 `get_video_info`；格式錯 400 `INVALID_VIDEO_ID`、查無（含私人影片）404 `VIDEO_NOT_FOUND` |
 | `GET /refresh?playlist=<清單名>` | 同 `refresh_playlist` |
 
 範例（清單名含空格要 URL 編碼）：
@@ -161,6 +163,40 @@ curl "http://127.0.0.1:8765/trending?region=JP&category=music"
 
 錯誤回應：類別名稱打錯 → 400（會列出可用名稱）；
 **該地區沒有這個類別的榜** → 404（實測 TW 的類別 29 就沒有榜）。
+
+## 🎬 單片中繼資料（`/video/{video_id}`）
+
+給下游機器人做**時長預檢、直播婉拒、embed 呈現**。任何公開影片都可查，
+不限於使用者的播放清單。1 unit／次、不快取（要判斷「現在」是不是直播）。
+
+```bash
+curl "http://127.0.0.1:8765/video/dQw4w9WgXcQ"
+```
+
+```json
+{
+  "video_id": "dQw4w9WgXcQ",
+  "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+  "channel": "Rick Astley",
+  "published_at": "2009-10-25T06:57:33Z",
+  "duration": "PT3M34S",
+  "duration_seconds": 214,
+  "is_live": false,
+  "views": 1800341708,
+  "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+}
+```
+
+- **欄位名是跨服務契約**，不會改名；機器人直接依名取值
+- `is_live` 判定：`liveBroadcastContent == "live"` 或時長為 0（進行中直播的
+  duration 可能是 `P0D`）。實測進行中的 lofi girl 直播回
+  `{"duration": "P0D", "duration_seconds": 0, "is_live": true}`；
+  已結束的直播存檔則正確回 `is_live: false`（時長會是實際直播長度，可能長達數十天，
+  時長預檢記得一併把關）
+- `thumbnail_url` 取解析度最高的可用縮圖（maxres → standard → high → medium → default）
+- 錯誤：格式不合法（非 11 碼 `[A-Za-z0-9_-]`）→ 400 `{"error": "INVALID_VIDEO_ID"}`；
+  查無影片或私人影片 → 404 `{"error": "VIDEO_NOT_FOUND"}`
 
 ## 機器人「隨機點歌」整合（REST）
 

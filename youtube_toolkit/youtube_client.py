@@ -151,6 +151,19 @@ class YouTubeClient:
         logger.info(f"影片詳細資訊抓取完畢（{len(details)}/{len(video_ids)} 部有資料）。")
         return details
 
+    def fetch_video(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """抓取單一影片的完整中繼資料（videos.list，成本 1 unit）。
+
+        回傳原始 API item（整形交給 video_info 模組）；影片不存在或為私人時
+        videos.list 會回空 items，此時回傳 None。
+        """
+        request = self._service.videos().list(
+            part="snippet,statistics,contentDetails", id=video_id
+        )
+        response = self._execute_with_retry(request, QuotaCost.LIST, f"videos.list ({video_id})")
+        items = response.get("items", [])
+        return items[0] if items else None
+
     def fetch_playlist_videos(self, playlist_id: str) -> List[Dict[str, Any]]:
         """一次取得清單內全部影片與詳情（依清單順序）。
 

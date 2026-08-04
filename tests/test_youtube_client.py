@@ -169,6 +169,32 @@ class TestFetchMostPopular(unittest.TestCase):
         self.assertEqual(self.client.fetch_most_popular("TW", 3), [{"id": "hot1"}, {"id": "hot2"}])
 
 
+class TestFetchVideo(unittest.TestCase):
+    def setUp(self):
+        self.service = FakeService(details_by_id={"dQw4w9WgXcQ": {"id": "dQw4w9WgXcQ"}})
+        self.quota = QuotaManager(daily_limit=100, soft_limit=80)
+        self.client = YouTubeClient(self.service, self.quota)
+
+    def test_requests_metadata_parts_for_single_id(self):
+        self.client.fetch_video("dQw4w9WgXcQ")
+        params = self.service.videos_list_calls[0]
+
+        self.assertEqual(params["id"], "dQw4w9WgXcQ")
+        self.assertEqual(params["part"], "snippet,statistics,contentDetails")
+
+    def test_costs_one_unit_and_is_accounted(self):
+        self.client.fetch_video("dQw4w9WgXcQ")
+        self.assertEqual(self.quota.used, QuotaCost.LIST)  # 配額記帳必經 consume()
+
+    def test_returns_raw_item(self):
+        self.assertEqual(self.client.fetch_video("dQw4w9WgXcQ"), {"id": "dQw4w9WgXcQ"})
+
+    def test_missing_or_private_video_returns_none(self):
+        # 私人／不存在的影片 videos.list 回空 items，不是錯誤
+        self.assertIsNone(self.client.fetch_video("aaaaaaaaaaa"))
+        self.assertEqual(self.quota.used, QuotaCost.LIST)  # 查無也照樣消耗了 1 unit
+
+
 class TestFetchVideoDetails(unittest.TestCase):
     def test_skips_videos_without_statistics(self):
         # v2 是私人／已下架影片：沒有 statistics，必須被跳過而不是 KeyError（重構前的實際 bug）

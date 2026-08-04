@@ -9,6 +9,7 @@ from youtube_toolkit.mcp_server import (
     perform_refresh,
     perform_search,
     perform_trending,
+    perform_video_info,
     playlists_overview,
     random_target_names,
 )
@@ -314,6 +315,68 @@ class TestPerformTrending(unittest.TestCase):
 
         self.assertEqual([v["rank"] for v in result["videos"]], [1, 2])
         self.assertIn("非使用者的播放清單", result["source"])
+
+
+class FakeVideoClient:
+    """回傳預先設定的單一影片 item；查無時回 None（同真實 client 行為）。"""
+
+    def __init__(self, item=None):
+        self._item = item
+        self.requested_ids = []
+
+    def fetch_video(self, video_id):
+        self.requested_ids.append(video_id)
+        return self._item
+
+
+class TestPerformVideoInfo(unittest.TestCase):
+    def _item(self, **overrides):
+        base = {
+            "id": "dQw4w9WgXcQ",
+            "snippet": {
+                "title": "影片標題",
+                "channelTitle": "頻道名",
+                "publishedAt": "2024-01-01T00:00:00Z",
+                "liveBroadcastContent": "none",
+                "thumbnails": {"high": {"url": "https://i.ytimg.com/vi/x/hqdefault.jpg", "width": 480}},
+            },
+            "statistics": {"viewCount": "12345"},
+            "contentDetails": {"duration": "PT12M34S"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_success_returns_contract_shape(self):
+        client = FakeVideoClient(self._item())
+
+        result = perform_video_info("dQw4w9WgXcQ", client=client)
+
+        self.assertEqual(client.requested_ids, ["dQw4w9WgXcQ"])
+        self.assertEqual(result["duration_seconds"], 754)
+        self.assertFalse(result["is_live"])
+        self.assertEqual(result["url"], "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    def test_live_stream_is_flagged(self):
+        item = self._item(contentDetails={"duration": "P0D"})
+        item["snippet"]["liveBroadcastContent"] = "live"
+
+        result = perform_video_info("dQw4w9WgXcQ", client=FakeVideoClient(item))
+
+        self.assertTrue(result["is_live"])
+
+    def test_invalid_id_raises_before_spending_quota(self):
+        client = FakeVideoClient(self._item())
+
+        with self.assertRaises(ValueError) as ctx:
+            perform_video_info("not-11", client=client)
+
+        self.assertEqual(ctx.exception.args[0], "INVALID_VIDEO_ID")
+        self.assertEqual(client.requested_ids, [])  # 格式錯就不該打 API 燒配額
+
+    def test_missing_video_raises_not_found(self):
+        with self.assertRaises(KeyError) as ctx:
+            perform_video_info("aaaaaaaaaaa", client=FakeVideoClient(None))
+        self.assertEqual(ctx.exception.args[0], "VIDEO_NOT_FOUND")
 
 
 if __name__ == "__main__":
