@@ -47,6 +47,7 @@ youtube_api/
 │   ├── trending.py             # 發燒影片榜的類別對照與整形（純函式）
 │   ├── video_info.py           # 單片中繼資料的驗證與整形（純函式，跨服務契約）
 │   ├── transcript.py           # 字幕抓取：軌道優先序、整形、例外映射（0 配額）
+│   ├── audio_extract.py        # 音訊抽取：yt-dlp + ffmpeg 轉低碼率 Opus（0 配額）
 │   ├── log_utils.py            # 彩色 logging
 │   ├── quota_manager.py        # API 配額管理（軟/硬上限）
 │   ├── playlist_sorter.py      # 🎯 主力：OAuth 排序 + 每日排程
@@ -68,14 +69,18 @@ youtube_api/
 │   ├── test_playlist_health.py #    私人/已刪除/不公開分類
 │   ├── test_playlist_cleaner.py#    候選名單安全性、二次驗證
 │   ├── test_playlist_search.py #    快取優先、退回 API、輸入錯誤處理
-│   └── test_mcp_server.py      #    快取 TTL 與搜尋邏輯
+│   ├── test_trending.py        #    類別對照、ISO 時長解析、榜單整形
+│   ├── test_video_info.py      #    ID 驗證、縮圖挑選、契約欄位鎖定
+│   ├── test_transcript.py      #    字幕軌優先序、截斷、例外映射
+│   ├── test_audio_extract.py   #    音訊抽取：錯誤映射、逾時、暫存清理
+│   └── test_mcp_server.py      #    快取 TTL、搜尋邏輯、/audio 路由
 ├── secrets/                    # ⚠️ 機敏憑證（已被 .gitignore 排除）
 │   ├── client_secret.json      #    OAuth 用戶端密鑰
 │   └── token.json              #    OAuth 憑證快取（自動產生，JSON 格式）
 ├── docs/
 │   └── PROJECT_REPORT.html     # 專案分析報告（架構圖、流程圖、優化建議）
 ├── docs/MCP_CLIENT_SETUP.md    # 🔌 yt-mcp 客戶端設定指南（n8n / Hermes / REST）
-├── Dockerfile                  # yt-mcp 容器映像（uv + Python 3.12）
+├── Dockerfile                  # yt-mcp 容器映像（uv + Python 3.12 + ffmpeg）
 ├── docker-compose.yml          # yt-mcp 服務定義（ai-net 網路、127.0.0.1:8765）
 ├── playlists.toml              # 📋 播放清單設定：名稱→ID、排序順序、各工具目標
 ├── quota_state.json            # 配額計數狀態（自動產生，gitignored）
@@ -330,7 +335,7 @@ uv run yt-mcp                       # 或本機直接跑
 
 - **MCP 端點**（Streamable HTTP）：`http://127.0.0.1:8765/mcp`
   工具：`search_songs`／`random_song`／`trending_videos`／`get_video_info`／`get_video_transcript`／`list_playlists`／`refresh_playlist`
-- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/trending?category=...`、`/video/{video_id}`、`/transcript/{video_id}`、`/playlists`、`/refresh`、`/health`
+- **REST 端點**：`GET /search?q=...&playlist=...`、`/random?count=...`、`/trending?category=...`、`/video/{video_id}`、`/transcript/{video_id}`、`/audio/{video_id}`、`/playlists`、`/refresh`、`/health`
 - **唯讀**：不暴露任何寫入功能；埠只映射到宿主機 `127.0.0.1`，容器間走 `ai-net` 網路
 
 提供**兩類來源不同的資料**（工具描述已寫明差異，避免 agent 叫錯）：
@@ -340,6 +345,7 @@ uv run yt-mcp                       # 或本機直接跑
 | 🎵 使用者自己的播放清單 | `/search`、`/random` | 載入一次後常駐記憶體（TTL 6 小時），查詢 **0 配額** |
 | 🔥 YouTube 公開資料（發燒榜、單片查詢） | `/trending`、`/video/{video_id}` | 不快取，**1 unit／次** |
 | 📝 影片字幕全文（給 LLM 摘要用） | `/transcript/{video_id}?max_chars=...` | 走網頁端資料，**0 配額**；人工字幕優先（繁中→英文→任一），再退自動生成 |
+| 🔊 低碼率音訊抽取（無字幕時給語音轉錄用） | `/audio/{video_id}`（REST 專屬，不設 MCP 工具） | yt-dlp + ffmpeg，**0 配額**；OGG/Opus 32kbps 單聲道（約 14.4 MB／小時），時長上限 `AUDIO_MAX_DURATION_SECONDS`（預設 7200 秒） |
 
 ```bash
 curl "http://127.0.0.1:8765/random"           # 從歌單抽 1 首（上限 10 首）
@@ -350,6 +356,7 @@ curl "http://127.0.0.1:8765/trending?category=music"  # all/music/gaming/film/sp
 
 curl "http://127.0.0.1:8765/video/dQw4w9WgXcQ"        # 單片中繼資料：時長／是否直播中／觀看數／縮圖
 curl "http://127.0.0.1:8765/transcript/9lVPAWLWtWc"   # 字幕純文字（?max_chars=8000 可截斷）
+curl -o song.ogg "http://127.0.0.1:8765/audio/9lVPAWLWtWc"  # 低碼率音訊（20 分鐘影片約數十秒，屬正常）
 ```
 
 抓取一律經 QuotaManager 與其他工具合併記帳。發燒榜預設地區可用 `.env` 的 `TRENDING_REGION` 改（預設 `TW`＝台灣榜，不是全球榜）。

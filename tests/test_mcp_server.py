@@ -1,8 +1,17 @@
 """mcp_server 測試：快取行為、搜尋與隨機抽歌邏輯（假 client，無網路、無伺服器）。"""
 
+import asyncio
+import json
 import random
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from starlette.requests import Request
+
+from youtube_toolkit import audio_extract
 from youtube_toolkit.mcp_server import (
     SongCache,
     perform_random,
@@ -13,6 +22,7 @@ from youtube_toolkit.mcp_server import (
     perform_video_info,
     playlists_overview,
     random_target_names,
+    rest_audio,
 )
 from youtube_toolkit.song_search import MAX_RANDOM_COUNT
 
@@ -415,6 +425,80 @@ class TestPerformTranscript(unittest.TestCase):
         self.assertEqual(result["language_code"], "en")
         self.assertEqual(result["text"], "hello world")
         self.assertFalse(result["truncated"])
+
+
+class TestRestAudioRoute(unittest.TestCase):
+    """路由層：/audio 的錯誤分流與「回應送出後清暫存」的 background task。
+
+    直接以假 Request 呼叫路由 coroutine（extract_audio 一律 mock 掉，不碰網路）。
+    """
+
+    VID = "dQw4w9WgXcQ"
+
+    def _call(self, video_id):
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": f"/audio/{video_id}",
+            "headers": [],
+            "query_string": b"",
+            "path_params": {"video_id": video_id},
+        }
+
+        async def invoke():
+            response = await rest_audio(Request(scope))
+            if response.background is not None:
+                await response.background()  # 模擬「回應送出後」的清理時機
+            return response
+
+        return asyncio.run(invoke())
+
+    def _body(self, response):
+        return json.loads(response.body)
+
+    def test_invalid_id_rejected_without_spawning_ytdlp(self):
+        with mock.patch("youtube_toolkit.audio_extract.extract_audio") as fake:
+            response = self._call("not-11")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._body(response), {"error": "INVALID_VIDEO_ID"})
+        fake.assert_not_called()  # 格式錯就不該起子程序
+
+    def test_extraction_errors_map_to_their_status_codes(self):
+        cases = (
+            (audio_extract.AudioUnavailable(), 404, "VIDEO_NOT_FOUND"),
+            (audio_extract.AudioLiveStream(), 400, "LIVE_STREAM"),
+            (audio_extract.AudioTooLong(), 413, "AUDIO_TOO_LONG"),
+            (audio_extract.AudioExtractError(), 502, "AUDIO_EXTRACT_FAILED"),
+        )
+        for exc, status, code in cases:
+            with mock.patch("youtube_toolkit.audio_extract.extract_audio", side_effect=exc):
+                response = self._call(self.VID)
+            self.assertEqual(response.status_code, status)
+            self.assertEqual(self._body(response), {"error": code})
+
+    def test_unexpected_exception_returns_502_not_bare_500(self):
+        with mock.patch(
+            "youtube_toolkit.audio_extract.extract_audio", side_effect=RuntimeError("boom")
+        ):
+            response = self._call(self.VID)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self._body(response), {"error": "AUDIO_EXTRACT_FAILED"})
+
+    def test_success_streams_ogg_and_cleans_workdir_after_send(self):
+        workdir = Path(tempfile.mkdtemp(prefix="test-audio-route-"))
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        audio_path = workdir / f"{self.VID}.ogg"
+        audio_path.write_bytes(b"OggS fake opus")
+
+        with mock.patch("youtube_toolkit.audio_extract.extract_audio", return_value=audio_path):
+            response = self._call(self.VID)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "audio/ogg")
+        self.assertIn(f"{self.VID}.ogg", response.headers["content-disposition"])
+        self.assertFalse(workdir.exists())  # background task 已把整個暫存目錄清掉
 
 
 if __name__ == "__main__":

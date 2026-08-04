@@ -10,6 +10,7 @@
 | 🎵 | **使用者自己的播放清單** | `search_songs`／`random_song`／`/search`／`/random` | 載入後查詢 0 units |
 | 🔥 | **YouTube 公開資料**（發燒榜、單片查詢） | `trending_videos`／`get_video_info`／`/trending`／`/video/{id}` | 即時查詢，1 unit／次 |
 | 📝 | **影片字幕全文**（走網頁端資料） | `get_video_transcript`／`/transcript/{id}` | **0 配額**（不經 Data API） |
+| 🔊 | **低碼率音訊抽取**（yt-dlp + ffmpeg） | `/audio/{id}`（**REST 專屬**，無 MCP 工具） | **0 配額**（不經 Data API） |
 
 ## 端點總覽
 
@@ -108,6 +109,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `GET /trending?category=<類別>&limit=<n>&region=<國碼>` | 同 `trending_videos`；三個參數都可省略 |
 | `GET /video/{video_id}` | 同 `get_video_info`；格式錯 400 `INVALID_VIDEO_ID`、查無（含私人影片）404 `VIDEO_NOT_FOUND` |
 | `GET /transcript/{video_id}?max_chars=<n>` | 同 `get_video_transcript`；**REST 預設不截斷**（MCP 預設截 8000） |
+| `GET /audio/{video_id}` | 低碼率音訊抽取（OGG/Opus 二進位串流）；**REST 專屬**，詳見下方 🔊 章節 |
 | `GET /refresh?playlist=<清單名>` | 同 `refresh_playlist` |
 
 範例（清單名含空格要 URL 編碼）：
@@ -233,6 +235,31 @@ curl "http://127.0.0.1:8765/transcript/9lVPAWLWtWc?max_chars=8000" # 截斷
 - 錯誤：格式不合法 → 400 `INVALID_VIDEO_ID`；影片不存在／私人 → 404 `VIDEO_NOT_FOUND`；
   無任何字幕或字幕停用 → 404 `NO_TRANSCRIPT`；被 YouTube 封鎖／限流 →
   502 `TRANSCRIPT_UPSTREAM_ERROR`（**可稍後重試**，機器人端建議退避）
+
+## 🔊 低碼率音訊抽取（`/audio/{video_id}`）
+
+給「影片快速摘要」的 fallback：影片**沒有 CC 字幕**（`/transcript` 回 404 `NO_TRANSCRIPT`）時，
+由 n8n 呼叫此端點抽出低碼率純音訊，上傳給 Gemini 做語音轉錄＋摘要。
+yt-dlp 下載 bestaudio 後以 ffmpeg 轉檔，**不經 Data API、0 配額**。
+
+```bash
+curl -o audio.ogg "http://127.0.0.1:8765/audio/9lVPAWLWtWc"
+```
+
+- 成功 → `200`，`Content-Type: audio/ogg` 二進位串流（**OGG/Opus、32kbps、單聲道**，
+  約 14.4 MB／小時——Gemini 支援的 `audio/ogg` 格式）
+- **REST 專屬、不設 MCP 工具**：二進位輸出對 AI agent 沒有意義
+- **耗時提醒**：實測 4 分鐘影片約 6 秒、16 分鐘影片約 15 秒；愈長愈久，
+  **呼叫端逾時請至少設 600 秒**（伺服器端逾時依時長 120～600 秒動態調整）
+- 刻意不快取：一部影片只該叫一次，重複呼叫會重新抽取
+- 錯誤（JSON 格式 `{"error": 代碼}`）：
+  - 400 `INVALID_VIDEO_ID`：video_id 不是 11 碼
+  - 400 `LIVE_STREAM`：直播中或即將首播（沒有完整音訊可抽）
+  - 404 `VIDEO_NOT_FOUND`：影片不存在／私人
+  - 413 `AUDIO_TOO_LONG`：時長超過上限（`.env` 的 `AUDIO_MAX_DURATION_SECONDS`，預設 7200 秒）
+  - 502 `AUDIO_EXTRACT_FAILED`：yt-dlp／ffmpeg 失敗或逾時（**可稍後重試**；
+    若持續發生，通常是 YouTube 改版、需要升級 yt-dlp——見伺服器端維運文件）
+- 已知限制：年齡限制影片無登入憑證抽不到，會落在 502
 
 ## 機器人「隨機點歌」整合（REST）
 

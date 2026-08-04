@@ -154,3 +154,5 @@ uvicorn==0.51.0 ; sys_platform != 'emscripten'
     # via mcp
 youtube-transcript-api==1.2.4
     # via youtube-api
+yt-dlp==2026.7.4
+    # via youtube-api

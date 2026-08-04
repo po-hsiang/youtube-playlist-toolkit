@@ -9,6 +9,11 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONIOENCODING=utf-8 \
     PYTHONUNBUFFERED=1
 
+# /audio 音訊抽取需要 ffmpeg（yt-dlp 下載後轉低碼率 Opus）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # 先裝依賴（獨立快取層），再裝專案本體
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev

@@ -8,11 +8,15 @@
    即時查詢、不快取，1 unit／次；get_video_transcript（字幕全文）走網頁端資料，
    **0 配額**。皆與使用者的播放清單無關。
 
+另有 REST 專屬端點 GET /audio/{video_id}：低碼率音訊抽取（yt-dlp + ffmpeg，0 配額），
+**不註冊 MCP 工具**——二進位輸出對 AI agent 沒有意義，供 n8n 等自動化流程直接呼叫。
+
 - MCP 端點（Streamable HTTP）：http://<host>:<port>/mcp
 - REST 端點（給非 AI 服務，與 MCP 共用同一份快取與 client）：
   GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、
   GET /random?playlist=...&count=...&q=...、GET /trending?category=...&limit=...&region=...、
-  GET /video/{video_id}、GET /transcript/{video_id}?max_chars=...、GET /refresh?playlist=...
+  GET /video/{video_id}、GET /transcript/{video_id}?max_chars=...、
+  GET /audio/{video_id}、GET /refresh?playlist=...
 - 安全邊界：只用 API Key、**唯讀**——不暴露任何寫入功能（排序／清除只能在本機手動執行）。
 - 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓。
   抓取一律經 QuotaManager 記帳（與其他工具共用 quota_state.json，合併計算）。
@@ -29,10 +33,11 @@ from typing import Any, Dict, List, Optional
 from anyio import to_thread
 from googleapiclient.errors import HttpError
 from mcp.server.fastmcp import FastMCP
+from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 
-from youtube_toolkit import config, playlists, transcript, trending, video_info
+from youtube_toolkit import audio_extract, config, playlists, transcript, trending, video_info
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.song_search import (
     DEFAULT_LIMIT,
@@ -397,6 +402,33 @@ async def rest_transcript(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@mcp.custom_route("/audio/{video_id}", methods=["GET"])
+async def rest_audio(request: Request):
+    """低碼率音訊抽取（yt-dlp + ffmpeg，0 配額）：成功回 OGG/Opus 二進位串流。
+
+    給 n8n 拿去餵語音轉錄模型用。抽取一部 20 分鐘影片可能要數十秒屬正常，
+    刻意不快取（呼叫端一部影片只會叫一次）。extract_audio 保證失敗時
+    自行清空暫存目錄；成功時由 FileResponse 的 background task 在
+    回應送出後移除。
+    """
+    video_id = request.path_params["video_id"]
+    if not video_info.is_valid_video_id(video_id):
+        return JSONResponse({"error": video_info.INVALID_VIDEO_ID}, status_code=400)
+    try:
+        audio_path = await to_thread.run_sync(partial(audio_extract.extract_audio, video_id))
+    except audio_extract.AudioExtractionError as e:
+        return _error_response(e, e.status_code)
+    except Exception:
+        logger.exception(f"[Audio] 抽取 {video_id} 時發生未預期錯誤")
+        return JSONResponse({"error": audio_extract.AUDIO_EXTRACT_FAILED}, status_code=502)
+    return FileResponse(
+        audio_path,
+        media_type="audio/ogg",
+        filename=f"{video_id}.ogg",
+        background=BackgroundTask(audio_extract.cleanup_workdir, audio_path.parent),
+    )
+
+
 @mcp.custom_route("/trending", methods=["GET"])
 async def rest_trending(request: Request) -> JSONResponse:
     category = request.query_params.get("category", "all")
@@ -432,7 +464,7 @@ async def rest_refresh(request: Request) -> JSONResponse:
 def main() -> None:
     logger.info(
         f"yt-mcp 啟動：MCP=http://{config.MCP_HOST}:{config.MCP_PORT}/mcp，"
-        f"REST=/health /playlists /search /random /trending /video/{{id}} /transcript/{{id}} /refresh，"
+        f"REST=/health /playlists /search /random /trending /video/{{id}} /transcript/{{id}} /audio/{{id}} /refresh，"
         f"快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘，發燒榜地區 {config.TRENDING_REGION}"
     )
     mcp.run(transport="streamable-http")
