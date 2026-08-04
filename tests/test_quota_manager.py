@@ -169,6 +169,18 @@ class TestSharedStateAcrossProcesses(unittest.TestCase):
         manager.consume(10, "格式不對也要撐住")
         self.assertEqual(manager.used, 60)
 
+    def test_session_used_counts_only_own_consumption(self):
+        """「本次作業消耗」報表用 session_used：不含載入的既有量，也不含其他程序的量。"""
+        self._write_state(QuotaManager(daily_limit=10000, soft_limit=8000).quota_day, 500)
+        manager = self._manager()  # 建構時已併入 500
+
+        manager.consume(10, "自己的第一筆")  # used: 500 → 510
+        self._write_state(manager.quota_day, 700)  # 掃描中途其他程序把合併值推到 700
+        manager.consume(10, "自己的第二筆")  # used: max(510, 700) + 10 = 710
+
+        self.assertEqual(manager.session_used, 20)  # 只有自己的兩筆
+        self.assertEqual(manager.used, 710)  # 全帳號合併值：舊算法 used-start 會誤報 210
+
     def test_no_temp_files_left_behind(self):
         """暫存檔帶 PID 避免多程序踩踏，但用完必須換名成正式檔、不留殘骸。"""
         manager = self._manager()

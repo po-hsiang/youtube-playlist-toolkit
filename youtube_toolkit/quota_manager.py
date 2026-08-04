@@ -68,6 +68,7 @@ class QuotaManager:
         self.state_file = Path(state_file) if state_file else None
         self.quota_day = ""  # 由 _sync_with_state_file() 依「現在」的配額日設定
         self.used = initial_used
+        self.session_used = 0  # 只算本實例消耗的量；used 是全帳號合併值，兩者用途不同
         self._read_failed = False  # 壞檔時只警告一次，避免每次 consume 洗版
         self._sync_with_state_file()
         logger.info(
@@ -92,6 +93,7 @@ class QuotaManager:
             logger.warning(message)
             raise QuotaSoftLimitExceeded(message)
         self.used += cost
+        self.session_used += cost  # 「本次作業消耗」的報表要用這個，used 會含其他程序的量
         self._save_state()
         logger.debug(f"[Quota] {context}: 消耗 {cost} 單位，目前累計 {self.used}/{self.daily_limit}。")
 

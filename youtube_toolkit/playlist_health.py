@@ -107,7 +107,6 @@ def main() -> None:
         targets = list(all_playlists.items())
 
     client = YouTubeClient.for_public_data()
-    start_used = client.quota_manager.used
     totals = {PRIVATE: 0, DELETED: 0, UNLISTED: 0, "videos": 0, "skipped": []}
 
     for name, playlist_id in targets:
@@ -133,8 +132,10 @@ def main() -> None:
     )
     if totals["skipped"]:
         print(f"跳過（無法讀取）：{'、'.join(totals['skipped'])}")
-    used = client.quota_manager.used
-    print(f"本次掃描消耗 {used - start_used} units（本配額日累計 {used}）")
+    # session_used 只算本程序的量；used 是全帳號合併值，掃描期間其他程序
+    # （長駐伺服器等）的消耗會混進 used 的差值，所以不能用差值算
+    quota = client.quota_manager
+    print(f"本次掃描消耗 {quota.session_used} units（本配額日累計 {quota.used}）")
 
 
 if __name__ == "__main__":
