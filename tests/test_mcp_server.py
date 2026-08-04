@@ -8,6 +8,7 @@ from youtube_toolkit.mcp_server import (
     perform_random,
     perform_refresh,
     perform_search,
+    perform_transcript,
     perform_trending,
     perform_video_info,
     playlists_overview,
@@ -377,6 +378,43 @@ class TestPerformVideoInfo(unittest.TestCase):
         with self.assertRaises(KeyError) as ctx:
             perform_video_info("aaaaaaaaaaa", client=FakeVideoClient(None))
         self.assertEqual(ctx.exception.args[0], "VIDEO_NOT_FOUND")
+
+
+class TestPerformTranscript(unittest.TestCase):
+    class _FakeApi:
+        def __init__(self):
+            self.listed = []
+
+        def list(self, video_id):
+            self.listed.append(video_id)
+
+            class Track:
+                language, language_code, is_generated = "English", "en", False
+
+                @staticmethod
+                def fetch():
+                    class S:
+                        text = "hello world"
+
+                    return [S()]
+
+            return [Track()]
+
+    def test_invalid_id_raises_before_touching_upstream(self):
+        api = self._FakeApi()
+
+        with self.assertRaises(ValueError) as ctx:
+            perform_transcript("not-11", api=api)
+
+        self.assertEqual(ctx.exception.args[0], "INVALID_VIDEO_ID")
+        self.assertEqual(api.listed, [])  # 格式錯就不該打上游
+
+    def test_valid_id_returns_contract_shape(self):
+        result = perform_transcript("dQw4w9WgXcQ", api=self._FakeApi())
+
+        self.assertEqual(result["language_code"], "en")
+        self.assertEqual(result["text"], "hello world")
+        self.assertFalse(result["truncated"])
 
 
 if __name__ == "__main__":

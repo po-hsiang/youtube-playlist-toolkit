@@ -5,13 +5,14 @@
 1. **使用者自己的播放清單**——search_songs／random_song／list_playlists／refresh_playlist
    走記憶體快取，載入後查詢 0 配額。
 2. **YouTube 公開資料**——trending_videos（發燒影片榜）、get_video_info（單片中繼資料）
-   即時查詢、不快取，1 unit／次。與使用者的播放清單無關。
+   即時查詢、不快取，1 unit／次；get_video_transcript（字幕全文）走網頁端資料，
+   **0 配額**。皆與使用者的播放清單無關。
 
 - MCP 端點（Streamable HTTP）：http://<host>:<port>/mcp
 - REST 端點（給非 AI 服務，與 MCP 共用同一份快取與 client）：
   GET /health、GET /playlists、GET /search?q=...&playlist=...&limit=...、
   GET /random?playlist=...&count=...&q=...、GET /trending?category=...&limit=...&region=...、
-  GET /video/{video_id}、GET /refresh?playlist=...
+  GET /video/{video_id}、GET /transcript/{video_id}?max_chars=...、GET /refresh?playlist=...
 - 安全邊界：只用 API Key、**唯讀**——不暴露任何寫入功能（排序／清除只能在本機手動執行）。
 - 快取：清單首次被查詢時載入並常駐記憶體，TTL（預設 6 小時）過期自動重抓。
   抓取一律經 QuotaManager 記帳（與其他工具共用 quota_state.json，合併計算）。
@@ -31,7 +32,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from youtube_toolkit import config, playlists, trending, video_info
+from youtube_toolkit import config, playlists, transcript, trending, video_info
 from youtube_toolkit.log_utils import logger
 from youtube_toolkit.song_search import (
     DEFAULT_LIMIT,
@@ -175,6 +176,19 @@ def perform_video_info(video_id: str, client: Optional[YouTubeClient] = None) ->
     return video_info.to_video_info(item)
 
 
+def perform_transcript(
+    video_id: str, max_chars: Optional[int] = None, api: Optional[Any] = None
+) -> Dict[str, Any]:
+    """抓影片字幕純文字（0 配額——走網頁端資料，不經 YouTube Data API）。
+
+    video_id 格式不合法拋 ValueError(INVALID_VIDEO_ID)；
+    其餘錯誤由 transcript 模組拋 TranscriptUnavailable(404 類)／TranscriptUpstreamError(502)。
+    """
+    if not video_info.is_valid_video_id(video_id):
+        raise ValueError(video_info.INVALID_VIDEO_ID)
+    return transcript.fetch_transcript(video_id, max_chars, api=api)
+
+
 def playlists_overview(cache: Optional[SongCache] = None) -> Dict[str, Any]:
     cache = cache or CACHE
     cached = cache.status()
@@ -262,6 +276,25 @@ def get_video_info(video_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+def get_video_transcript(
+    video_id: str, max_chars: int = transcript.DEFAULT_MCP_MAX_CHARS
+) -> Dict[str, Any]:
+    """抓 YouTube 影片的字幕純文字（給 LLM 摘要影片內容用）。
+
+    字幕軌自動挑選：人工上傳優先（繁中 → 英文 → 任一語言），再退自動生成字幕。
+    video_id 是網址 watch?v= 後面的 11 碼。走網頁端資料，**不消耗 API 配額**。
+    max_chars：超過即截斷並標 truncated: true（預設 8000，避免塞爆 context；
+    char_count 一律是完整字幕長度）。傳 0 表示不截斷——字幕可能長達數十萬字元，慎用。
+    錯誤以 {"error": "INVALID_VIDEO_ID"|"VIDEO_NOT_FOUND"|"NO_TRANSCRIPT"|
+    "TRANSCRIPT_UPSTREAM_ERROR"} 回傳；UPSTREAM 表示被 YouTube 暫時限流，可稍後重試。
+    """
+    try:
+        return perform_transcript(video_id, max_chars if max_chars > 0 else None)
+    except (ValueError, transcript.TranscriptUnavailable, transcript.TranscriptUpstreamError) as e:
+        return {"error": e.args[0]}
+
+
+@mcp.tool()
 def list_playlists() -> Dict[str, Any]:
     """列出所有可搜尋的播放清單，以及各清單的快取狀態（歌曲數、上次載入時間）。"""
     return playlists_overview()
@@ -345,6 +378,25 @@ async def rest_video(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@mcp.custom_route("/transcript/{video_id}", methods=["GET"])
+async def rest_transcript(request: Request) -> JSONResponse:
+    video_id = request.path_params["video_id"]
+    try:
+        max_chars: Optional[int] = _int_param(request, "max_chars", 0)  # REST 預設不截斷
+        result = await to_thread.run_sync(
+            partial(perform_transcript, video_id, max_chars if max_chars > 0 else None)
+        )
+    except BadRequest as e:
+        return _error_response(e, 400)
+    except ValueError as e:
+        return _error_response(e, 400)  # {"error": "INVALID_VIDEO_ID"}
+    except transcript.TranscriptUnavailable as e:
+        return _error_response(e, 404)  # {"error": "VIDEO_NOT_FOUND"|"NO_TRANSCRIPT"}
+    except transcript.TranscriptUpstreamError as e:
+        return _error_response(e, 502)  # {"error": "TRANSCRIPT_UPSTREAM_ERROR"}，可重試
+    return JSONResponse(result)
+
+
 @mcp.custom_route("/trending", methods=["GET"])
 async def rest_trending(request: Request) -> JSONResponse:
     category = request.query_params.get("category", "all")
@@ -380,7 +432,7 @@ async def rest_refresh(request: Request) -> JSONResponse:
 def main() -> None:
     logger.info(
         f"yt-mcp 啟動：MCP=http://{config.MCP_HOST}:{config.MCP_PORT}/mcp，"
-        f"REST=/health /playlists /search /random /trending /video/{{id}} /refresh，"
+        f"REST=/health /playlists /search /random /trending /video/{{id}} /transcript/{{id}} /refresh，"
         f"快取 TTL {config.MCP_CACHE_TTL_MINUTES} 分鐘，發燒榜地區 {config.TRENDING_REGION}"
     )
     mcp.run(transport="streamable-http")

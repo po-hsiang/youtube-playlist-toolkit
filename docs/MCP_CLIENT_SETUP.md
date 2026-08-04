@@ -9,6 +9,7 @@
 |---|---------|-----------|------|
 | 🎵 | **使用者自己的播放清單** | `search_songs`／`random_song`／`/search`／`/random` | 載入後查詢 0 units |
 | 🔥 | **YouTube 公開資料**（發燒榜、單片查詢） | `trending_videos`／`get_video_info`／`/trending`／`/video/{id}` | 即時查詢，1 unit／次 |
+| 📝 | **影片字幕全文**（走網頁端資料） | `get_video_transcript`／`/transcript/{id}` | **0 配額**（不經 Data API） |
 
 ## 端點總覽
 
@@ -89,6 +90,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url}]}` |
 | `trending_videos` | `category`（預設 all）、`limit`（1～50，預設 3）、`region`（預設 TW） | `{source, region, category, returned, videos: [{rank, title, channel, views, likes, published_at, duration, duration_seconds, is_live, category_id, url}]}` |
 | `get_video_info` | `video_id`（必填，11 碼） | `{video_id, title, channel, published_at, duration, duration_seconds, is_live, views, thumbnail_url, url}`；錯誤回 `{error: "INVALID_VIDEO_ID"\|"VIDEO_NOT_FOUND"}` |
+| `get_video_transcript` | `video_id`（必填，11 碼）、`max_chars`（預設 8000，0＝不截斷） | `{video_id, language, language_code, is_auto_generated, text, char_count, truncated}`；錯誤回 `{error: "INVALID_VIDEO_ID"\|"VIDEO_NOT_FOUND"\|"NO_TRANSCRIPT"\|"TRANSCRIPT_UPSTREAM_ERROR"}` |
 | `list_playlists` | 無 | 全部清單名稱與快取狀態（歌曲數、上次載入時間） |
 | `refresh_playlist` | `playlist`（留空＝重抓所有已快取清單） | `{refreshed: {清單名: 歌曲數}}` |
 
@@ -105,6 +107,7 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 | `GET /random?playlist=<清單名>&count=<n>&q=<關鍵字>` | 同 `random_song`；三個參數都可省略 |
 | `GET /trending?category=<類別>&limit=<n>&region=<國碼>` | 同 `trending_videos`；三個參數都可省略 |
 | `GET /video/{video_id}` | 同 `get_video_info`；格式錯 400 `INVALID_VIDEO_ID`、查無（含私人影片）404 `VIDEO_NOT_FOUND` |
+| `GET /transcript/{video_id}?max_chars=<n>` | 同 `get_video_transcript`；**REST 預設不截斷**（MCP 預設截 8000） |
 | `GET /refresh?playlist=<清單名>` | 同 `refresh_playlist` |
 
 範例（清單名含空格要 URL 編碼）：
@@ -197,6 +200,39 @@ curl "http://127.0.0.1:8765/video/dQw4w9WgXcQ"
 - `thumbnail_url` 取解析度最高的可用縮圖（maxres → standard → high → medium → default）
 - 錯誤：格式不合法（非 11 碼 `[A-Za-z0-9_-]`）→ 400 `{"error": "INVALID_VIDEO_ID"}`；
   查無影片或私人影片 → 404 `{"error": "VIDEO_NOT_FOUND"}`
+
+## 📝 影片字幕全文（`/transcript/{video_id}`）
+
+抓字幕純文字給 LLM 摘要影片內容。走 YouTube 網頁端資料（youtube-transcript-api），
+**不經 Data API、0 配額**。
+
+```bash
+curl "http://127.0.0.1:8765/transcript/9lVPAWLWtWc"                # 全文
+curl "http://127.0.0.1:8765/transcript/9lVPAWLWtWc?max_chars=8000" # 截斷
+```
+
+```json
+{
+  "video_id": "9lVPAWLWtWc",
+  "language": "Chinese (Traditional) - Official",
+  "language_code": "zh-Hant",
+  "is_auto_generated": false,
+  "text": "已經忘了嗎 坐在夏日的樹蔭下，我們把冰放進口中等待風起 …",
+  "char_count": 457,
+  "truncated": false
+}
+```
+
+- **欄位名是跨服務契約**，不會改名
+- 字幕軌自動挑選：人工上傳優先，語言依 `zh-Hant-TW → zh-Hant → zh-TW → en`，
+  沒有再退**任一**人工字幕；都沒有才用自動生成字幕（同語言優先序 → 任一）
+- `max_chars`：超過即截斷並回 `truncated: true`；**`char_count` 一律是完整字幕長度**，
+  下游才知道全文有多少。REST 預設不截斷；MCP 工具預設截 8000（避免塞爆 agent context），
+  傳 `max_chars: 0` 可關掉
+- 字幕全文可能長達數十萬字元（長片／直播存檔），餵 LLM 前請自行斟酌 max_chars
+- 錯誤：格式不合法 → 400 `INVALID_VIDEO_ID`；影片不存在／私人 → 404 `VIDEO_NOT_FOUND`；
+  無任何字幕或字幕停用 → 404 `NO_TRANSCRIPT`；被 YouTube 封鎖／限流 →
+  502 `TRANSCRIPT_UPSTREAM_ERROR`（**可稍後重試**，機器人端建議退避）
 
 ## 機器人「隨機點歌」整合（REST）
 

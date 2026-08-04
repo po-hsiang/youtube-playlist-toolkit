@@ -29,6 +29,8 @@ cryptography==49.0.0
     # via
     #   google-auth
     #   pyjwt
+defusedxml==0.7.1
+    # via youtube-transcript-api
 google-api-core==2.31.0
     # via google-api-python-client
 google-api-python-client==2.198.0
@@ -113,6 +115,7 @@ requests==2.34.2
     #   google-api-core
     #   requests-oauthlib
     #   youtube-api
+    #   youtube-transcript-api
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
 rpds-py==2026.6.3
@@ -149,3 +152,5 @@ urllib3==2.7.0
     # via requests
 uvicorn==0.51.0 ; sys_platform != 'emscripten'
     # via mcp
+youtube-transcript-api==1.2.4
+    # via youtube-api
