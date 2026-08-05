@@ -11,11 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from youtube_toolkit import config
 from youtube_toolkit.audio_extract import (
     AUDIO_EXTRACT_FAILED,
     AUDIO_TOO_LONG,
-    EXTRACT_TIMEOUT_BASE,
-    EXTRACT_TIMEOUT_MAX,
     LIVE_STREAM,
     PROBE_TIMEOUT_SECONDS,
     VIDEO_NOT_FOUND,
@@ -25,7 +24,6 @@ from youtube_toolkit.audio_extract import (
     AudioTooLong,
     AudioUnavailable,
     extract_audio,
-    extract_timeout,
 )
 
 VID = "dQw4w9WgXcQ"
@@ -75,8 +73,10 @@ class ExtractAudioTestBase(unittest.TestCase):
 
         return handler
 
-    def extract(self, run, max_duration=None):
-        return extract_audio(VID, max_duration=max_duration, run=run, workdir=self.workdir)
+    def extract(self, run, max_duration=None, total_timeout=None):
+        return extract_audio(
+            VID, max_duration=max_duration, run=run, workdir=self.workdir, total_timeout=total_timeout
+        )
 
     def assert_fails_and_cleans_workdir(self, run, exc_type, code, status_code, max_duration=None):
         with self.assertRaises(exc_type) as ctx:
@@ -274,20 +274,48 @@ class TestExtractionFailures(ExtractAudioTestBase):
         self.assertFalse(self.workdir.exists())  # 連未預期例外都不留殘檔
 
 
-class TestExtractTimeout(unittest.TestCase):
-    def test_short_video_keeps_tight_base_timeout(self):
-        self.assertEqual(extract_timeout(0), EXTRACT_TIMEOUT_BASE)
-        self.assertEqual(extract_timeout(60), 124)
+class TestTotalTimeout(ExtractAudioTestBase):
+    def test_default_gates_match_three_tier_decision(self):
+        """主人 2026-08-05 定案的活門是契約：時長閘門 70 分鐘、整體逾時 180 秒。
 
-    def test_timeout_scales_with_duration(self):
-        self.assertEqual(extract_timeout(1200), 200)  # 20 分鐘影片
+        逾時是三層瀑布的最內層（bot 200 → n8n 190 → 本服務 180），
+        改動前先確認上游兩層有跟著調，否則上游會先斷線收不到明確錯誤。
+        """
+        self.assertEqual(config.AUDIO_MAX_DURATION_SECONDS, 4200)
+        self.assertEqual(config.AUDIO_TIMEOUT_SECONDS, 180)
 
-    def test_two_hour_limit_fits_within_max(self):
-        # 固定 120 秒會讓上限內的長片必然逾時——這是動態逾時存在的理由
-        self.assertEqual(extract_timeout(7200), EXTRACT_TIMEOUT_MAX)
+    def test_default_duration_gate_is_seventy_minutes(self):
+        run = ScriptedRun(self.probe_ok(duration=4201))
 
-    def test_timeout_is_capped(self):
-        self.assertEqual(extract_timeout(100_000), EXTRACT_TIMEOUT_MAX)
+        self.assert_fails_and_cleans_workdir(run, AudioTooLong, AUDIO_TOO_LONG, 413)
+
+    def test_all_steps_share_one_total_budget(self):
+        run = ScriptedRun(self.probe_ok(), self.download_ok(), self.ffmpeg_ok())
+
+        self.extract(run, total_timeout=50)
+
+        # 探測另有 30 秒上限；下載與轉檔只能用剩餘預算，不會各自重新起算
+        self.assertEqual(run.calls[0][1]["timeout"], PROBE_TIMEOUT_SECONDS)
+        for cmd, kwargs in run.calls[1:]:
+            self.assertGreater(kwargs["timeout"], 0)
+            self.assertLessEqual(kwargs["timeout"], 50)
+
+    def test_probe_timeout_shrinks_when_budget_is_smaller(self):
+        run = ScriptedRun(self.probe_ok(), self.download_ok(), self.ffmpeg_ok())
+
+        self.extract(run, total_timeout=10)
+
+        self.assertLessEqual(run.calls[0][1]["timeout"], 10)
+
+    def test_exhausted_budget_fails_fast_and_cleans_workdir(self):
+        run = ScriptedRun(self.probe_ok())
+
+        with self.assertRaises(AudioExtractError) as ctx:
+            self.extract(run, total_timeout=0)
+
+        self.assertEqual(ctx.exception.args[0], AUDIO_EXTRACT_FAILED)
+        self.assertEqual(len(run.calls), 0)  # 預算耗盡連探測都不起
+        self.assertFalse(self.workdir.exists())
 
 
 class TestErrorContract(unittest.TestCase):

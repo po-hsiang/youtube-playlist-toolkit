@@ -59,7 +59,12 @@ MCP_BASE_URL = os.environ.get("MCP_BASE_URL", f"http://127.0.0.1:{MCP_PORT}")
 TRENDING_REGION = os.environ.get("TRENDING_REGION", "TW")
 
 # 音訊抽取（/audio）允許的影片時長上限（秒），超過回 413 AUDIO_TOO_LONG
-AUDIO_MAX_DURATION_SECONDS = int(os.environ.get("AUDIO_MAX_DURATION_SECONDS", "7200"))
+# 主人 2026-08-05 定案收在 70 分鐘：摘要是福利功能，先求穩，有需求再開
+AUDIO_MAX_DURATION_SECONDS = int(os.environ.get("AUDIO_MAX_DURATION_SECONDS", "4200"))
+
+# 音訊抽取的整體逾時（秒，含探測）。三層活門的最內層（bot 200 → n8n 190 → 本服務 180）：
+# 本服務必須最先放棄，上游才收得到明確的 502 而不是斷線
+AUDIO_TIMEOUT_SECONDS = int(os.environ.get("AUDIO_TIMEOUT_SECONDS", "180"))
 
 # ── 檔案日誌 ─────────────────────────────────────
 # 不同程序（主機工具／排序容器）應寫不同檔案，避免同時輪替互相干擾

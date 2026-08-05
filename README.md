@@ -345,7 +345,7 @@ uv run yt-mcp                       # 或本機直接跑
 | 🎵 使用者自己的播放清單 | `/search`、`/random` | 載入一次後常駐記憶體（TTL 6 小時），查詢 **0 配額** |
 | 🔥 YouTube 公開資料（發燒榜、單片查詢） | `/trending`、`/video/{video_id}` | 不快取，**1 unit／次** |
 | 📝 影片字幕全文（給 LLM 摘要用） | `/transcript/{video_id}?max_chars=...` | 走網頁端資料，**0 配額**；人工字幕優先（繁中→英文→任一），再退自動生成 |
-| 🔊 低碼率音訊抽取（無字幕時給語音轉錄用） | `/audio/{video_id}`（REST 專屬，不設 MCP 工具） | yt-dlp + ffmpeg，**0 配額**；OGG/Opus 32kbps 單聲道（約 14.4 MB／小時），時長上限 `AUDIO_MAX_DURATION_SECONDS`（預設 7200 秒） |
+| 🔊 低碼率音訊抽取（無字幕時給語音轉錄用） | `/audio/{video_id}`（REST 專屬，不設 MCP 工具） | yt-dlp + ffmpeg，**0 配額**；OGG/Opus 32kbps 單聲道（約 14.4 MB／小時），時長上限 `AUDIO_MAX_DURATION_SECONDS`（預設 4200 秒＝70 分鐘）、整體逾時 `AUDIO_TIMEOUT_SECONDS`（預設 180 秒） |
 
 ```bash
 curl "http://127.0.0.1:8765/random"           # 從歌單抽 1 首（上限 10 首）

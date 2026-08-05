@@ -11,8 +11,10 @@ kill 子程序，worker 立刻釋放。測試時注入假的 run callable 即可
 yt-dlp 會直接複製封裝、跳過重編碼，-b:a 32k 就沒生效——碼率控制必須
 由我們自己的 ffmpeg 步驟保證。
 
-逾時隨影片時長放大（120～600 秒）：固定 120 秒會讓「時長上限內的長片」
-必然逾時，形成規格允許卻永遠失敗的死角。
+逾時是**含探測的整體預算**（預設 180 秒）：主人定案的三層活門最內層
+（bot 200 → n8n 190 → 本服務 180），本服務必須最先放棄，上游才收得到
+明確的 502 而不是斷線。時長閘門同步收在 70 分鐘（4200 秒），正常速率
+（實測約每分鐘影片 1 秒）跑得完；被 YouTube 限速時寧可 502 讓上游重試。
 
 錯誤映射（args[0] 是契約錯誤碼、status_code 是對應 HTTP 狀態，伺服器不裸噴 500）：
 - AudioUnavailable  → 404 VIDEO_NOT_FOUND（影片不存在／私人）
@@ -39,9 +41,7 @@ LIVE_STREAM = "LIVE_STREAM"
 AUDIO_TOO_LONG = "AUDIO_TOO_LONG"
 AUDIO_EXTRACT_FAILED = "AUDIO_EXTRACT_FAILED"
 
-PROBE_TIMEOUT_SECONDS = 30
-EXTRACT_TIMEOUT_BASE = 120  # 短片維持緊逾時
-EXTRACT_TIMEOUT_MAX = 600  # 時長上限（預設 2 小時）的影片也給得完
+PROBE_TIMEOUT_SECONDS = 30  # 探測在總預算內另設較緊上限，別讓卡住的探測吃光下載時間
 AUDIO_BITRATE = "32k"  # mono Opus ≈ 14.4 MB／小時，Gemini 支援的 audio/ogg
 
 # 探測失敗時 stderr 含這些樣式＝影片本身不存在／看不到（小寫比對）
@@ -100,22 +100,27 @@ def _stderr_tail(proc: "subprocess.CompletedProcess[str]") -> str:
     return (proc.stderr or "").strip()[-300:]
 
 
-def extract_timeout(duration_seconds: int) -> int:
-    """抽取逾時隨時長放大：5 分鐘片 140 秒、20 分鐘片 200 秒、2 小時上限 600 秒。"""
-    return min(EXTRACT_TIMEOUT_MAX, EXTRACT_TIMEOUT_BASE + int(duration_seconds) // 15)
+def _remaining(deadline: float, step: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise AudioExtractError(f"{step}前已超過總逾時")
+    return remaining
 
 
-def probe(video_id: str, run: _RunFn = subprocess.run) -> Dict[str, Any]:
+def probe(video_id: str, run: _RunFn = subprocess.run, deadline: Optional[float] = None) -> Dict[str, Any]:
     """以 yt-dlp 取 metadata（不下載）。回傳解析後的 JSON dict。"""
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--dump-single-json", "--no-download", "--no-playlist", "--no-warnings",
         _watch_url(video_id),
     ]
+    timeout: float = PROBE_TIMEOUT_SECONDS
+    if deadline is not None:
+        timeout = min(timeout, _remaining(deadline, "探測"))
     try:
-        proc = _run(cmd, PROBE_TIMEOUT_SECONDS, run)
+        proc = _run(cmd, timeout, run)
     except subprocess.TimeoutExpired:
-        raise AudioExtractError(f"探測逾時（>{PROBE_TIMEOUT_SECONDS} 秒）") from None
+        raise AudioExtractError(f"探測逾時（>{int(timeout)} 秒）") from None
     if proc.returncode != 0:
         stderr = (proc.stderr or "").lower()
         if any(pattern in stderr for pattern in _NOT_FOUND_PATTERNS):
@@ -149,11 +154,8 @@ def _download_bestaudio(video_id: str, workdir: Path, deadline: float, run: _Run
         "-o", str(workdir / f"{video_id}.src.%(ext)s"),
         _watch_url(video_id),
     ]
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise AudioExtractError("下載前已超過總逾時")
     try:
-        proc = _run(cmd, remaining, run)
+        proc = _run(cmd, _remaining(deadline, "下載"), run)
     except subprocess.TimeoutExpired:
         raise AudioExtractError("下載音訊逾時") from None
     if proc.returncode != 0:
@@ -172,11 +174,8 @@ def _transcode_to_opus(src: Path, output: Path, deadline: float, run: _RunFn) ->
         "-vn", "-ac", "1", "-c:a", "libopus", "-b:a", AUDIO_BITRATE,
         str(output),
     ]
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise AudioExtractError("轉檔前已超過總逾時")
     try:
-        proc = _run(cmd, remaining, run)
+        proc = _run(cmd, _remaining(deadline, "轉檔"), run)
     except subprocess.TimeoutExpired:
         raise AudioExtractError("ffmpeg 轉檔逾時") from None
     if proc.returncode != 0:
@@ -195,21 +194,26 @@ def extract_audio(
     max_duration: Optional[int] = None,
     run: _RunFn = subprocess.run,
     workdir: Optional[Path] = None,
+    total_timeout: Optional[int] = None,
 ) -> Path:
     """探測 → 預檢 → 下載 → 轉檔，回傳 OGG/Opus 檔路徑（位於獨立暫存目錄內）。
 
+    total_timeout 是**含探測**的整體預算（預設 config.AUDIO_TIMEOUT_SECONDS＝180）：
+    本服務是三層活門的最內層，必須比上游先放棄。
     成功時呼叫端負責在回應送出後 cleanup_workdir(回傳路徑.parent)；
     **拋出任何例外前必先清空暫存目錄**，失敗路徑不留殘檔。
     workdir 僅供測試注入，正式流程一律在系統 temp 開新目錄。
     """
     if max_duration is None:
         max_duration = config.AUDIO_MAX_DURATION_SECONDS
+    if total_timeout is None:
+        total_timeout = config.AUDIO_TIMEOUT_SECONDS
+    deadline = time.monotonic() + total_timeout
     work = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="yt-audio-"))
     try:
-        meta = probe(video_id, run=run)
+        meta = probe(video_id, run=run, deadline=deadline)
         precheck(meta, max_duration)
         duration = int(meta.get("duration") or 0)
-        deadline = time.monotonic() + extract_timeout(duration)
 
         started = time.monotonic()
         src = _download_bestaudio(video_id, work, deadline, run)
