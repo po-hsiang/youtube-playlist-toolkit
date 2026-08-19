@@ -11,7 +11,7 @@
 | 工具 | 模組 | 認證方式 | 功能 |
 |------|------|----------|------|
 | 🎯 播放清單自動排序 | `youtube_toolkit/playlist_sorter.py` | OAuth 2.0 | **主力工具**。每天定時（預設 16:05）將 13 個播放清單依「頻道 A→Z、觀看數高→低」排序，並實際寫回 YouTube |
-| 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 命令列搜尋歌名／頻道；優先走 yt-mcp 記憶體快取（**0 配額、毫秒回應**），伺服器沒開才呼叫 API |
+| 🔍 歌單關鍵字搜尋 | `youtube_toolkit/playlist_search.py` | API Key | 命令列搜尋歌名／頻道／**影片標籤**（標籤讓中文名也搜得到羅馬字歌名，見下方跨語言說明）；優先走 yt-mcp 記憶體快取（**0 配額、毫秒回應**），伺服器沒開才呼叫 API |
 | 👯 重複歌曲偵測 | `youtube_toolkit/duplicate_finder.py` | API Key | 以標題「子字串互相包含」比對找出疑似重複的歌，依觀看數排序建議保留哪一首 |
 | 🌐 影片關鍵字搜尋 | `youtube_toolkit/video_search.py` | API Key | 呼叫 `search.list` REST API，搜尋近 180 天內的影片（strict 安全搜尋） |
 | 🩺 清單健康檢查 | `youtube_toolkit/playlist_health.py` | API Key | 掃描各清單，列出**私人／已刪除／不公開**的影片（網址、位置、可得資訊） |
@@ -43,7 +43,7 @@ youtube_api/
 │   ├── auth.py                 # 認證中心：API Key / OAuth（JSON 憑證快取）
 │   ├── youtube_client.py       # 共用資料存取層（帶配額記帳）
 │   ├── sorting.py              # LIS 最少搬移計畫（純函式）
-│   ├── song_search.py          # 歌曲比對／隨機抽選核心（MCP 伺服器與 CLI 共用）
+│   ├── song_search.py          # 歌曲比對／隨機抽選核心（跨語言標籤比對；MCP 與 CLI 共用）
 │   ├── trending.py             # 發燒影片榜的類別對照與整形（純函式）
 │   ├── video_info.py           # 單片中繼資料的驗證與整形（純函式，跨服務契約）
 │   ├── transcript.py           # 字幕抓取：軌道優先序、整形、例外映射（0 配額）
@@ -71,6 +71,7 @@ youtube_api/
 │   ├── test_playlist_search.py #    快取優先、退回 API、輸入錯誤處理
 │   ├── test_trending.py        #    類別對照、ISO 時長解析、榜單整形
 │   ├── test_video_info.py      #    ID 驗證、縮圖挑選、契約欄位鎖定
+│   ├── test_song_search.py     #    跨語言標籤比對、命中排序、查無提示
 │   ├── test_transcript.py      #    字幕軌優先序、截斷、例外映射
 │   ├── test_audio_extract.py   #    音訊抽取：錯誤映射、逾時、暫存清理
 │   └── test_mcp_server.py      #    快取 TTL、搜尋邏輯、/audio 路由
@@ -244,6 +245,29 @@ uv run yt-playlist-search CAPPER -v           # 顯示逐筆配額等除錯訊�
 **查詢優先走 yt-mcp 伺服器的記憶體快取**（`docker compose up -d` 後即生效）：
 毫秒回應、**不消耗任何配額**；伺服器沒開時自動退回直接呼叫 API（會重新載入整份清單，
 YTMusic 約 42 units）。兩條路徑共用 `song_search.py` 的比對邏輯，結果保證一致。
+
+#### 跨語言搜尋（v0.14.0）
+
+歌單約七成曲目來自 YouTube 自動生成的「**- Topic**」頻道，歌名與頻道名只有羅馬字
+（周興哲的歌只寫得出 `Eric Chou - Topic`），因此用中文名一律查不到。這些影片的
+`snippet.tags` 通常帶有藝人的母語名，而這份資料**本來就在既有的 `videos.list` 回應裡**，
+所以把標籤納入比對範圍**不增加任何配額**。
+
+```
+周興哲 → 0 筆        →  2 筆（標籤命中 Eric Chou - Topic）
+ラッドウィンプス → 0 筆  →  8 筆
+아이유 → 0 筆        →  2 筆
+```
+
+比對規則與注意事項：
+
+- **中日韓關鍵字**用子字串比對；**純英數關鍵字**要求前後不接英數字（詞邊界），
+  避免搜 `iu` 誤中 `studio`、搜 `ai` 誤中 `aimer`。
+- 每筆結果附 `matched_on`：`title`／`channel` 是直接命中，`tag` 是標籤命中。
+  **直接命中一律排在標籤命中之前**。
+- ⚠️ 標籤是隱藏欄位，部分頻道會塞入宣傳性標籤（實測有影片掛了 60 個標籤，
+  包含一整排他人藝名），因此 `tag` 命中可能是相關作品而非該藝人本人。
+- 查無結果時回傳 `hint`，提示改用羅馬拼音重試——AI Agent 靠它自己換關鍵字再查。
 
 > 程式化使用（例如聊天機器人）可改用 `YouTubeAPIHandler.search_keyword_in_song_list()`，
 > 它會把結果切成 ≤1,900 字元的分段字串（為 Discord 2,000 字元上限預留）。

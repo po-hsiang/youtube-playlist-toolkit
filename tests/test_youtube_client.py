@@ -102,8 +102,10 @@ def playlist_item(item_id, video_id, title="song"):
     }
 
 
-def video_detail(video_id, title="song", channel="channel", views=100, with_statistics=True):
+def video_detail(video_id, title="song", channel="channel", views=100, with_statistics=True, tags=None):
     item = {"id": video_id, "snippet": {"title": title, "channelTitle": channel}}
+    if tags is not None:
+        item["snippet"]["tags"] = tags
     if with_statistics:
         item["statistics"] = {"viewCount": str(views)}
     return item
@@ -208,6 +210,22 @@ class TestFetchVideoDetails(unittest.TestCase):
         details = client.fetch_video_details(["v1", "v2"])
         self.assertEqual(details["v1"]["views"], 42)
         self.assertNotIn("v2", details)
+
+    def test_keeps_tags_for_cross_language_search(self):
+        # 標籤是跨語言搜尋的唯一線索（Topic 頻道的歌名／頻道名只有羅馬字），
+        # 而且同一次 videos.list 就拿得到——丟掉它等於白付配額
+        service = FakeService(details_by_id={"v1": video_detail("v1", tags=["Eric Chou", "周興哲"])})
+        client = YouTubeClient(service, QuotaManager(daily_limit=100, soft_limit=80))
+
+        details = client.fetch_video_details(["v1"])
+
+        self.assertEqual(details["v1"]["tags"], ["Eric Chou", "周興哲"])
+
+    def test_missing_tags_become_empty_list(self):
+        service = FakeService(details_by_id={"v1": video_detail("v1")})
+        client = YouTubeClient(service, QuotaManager(daily_limit=100, soft_limit=80))
+
+        self.assertEqual(client.fetch_video_details(["v1"])["v1"]["tags"], [])
 
     def test_batches_of_fifty(self):
         video_ids = [f"v{i}" for i in range(120)]

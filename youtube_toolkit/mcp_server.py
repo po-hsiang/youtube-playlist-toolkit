@@ -3,7 +3,8 @@
 **提供兩類來源完全不同的資料**，工具描述刻意寫明差異，避免 agent 叫錯工具：
 
 1. **使用者自己的播放清單**——search_songs／random_song／list_playlists／refresh_playlist
-   走記憶體快取，載入後查詢 0 配額。
+   走記憶體快取，載入後查詢 0 配額；比對範圍含影片標籤，故中文／日文藝人名
+   也查得到只有羅馬字歌名的曲目（詳見 song_search 模組）。
 2. **YouTube 公開資料**——trending_videos（發燒影片榜）、get_video_info（單片中繼資料）
    即時查詢、不快取，1 unit／次；get_video_transcript（字幕全文）走網頁端資料，
    **0 配額**。皆與使用者的播放清單無關。
@@ -225,10 +226,19 @@ mcp = FastMCP(
 
 @mcp.tool()
 def search_songs(keyword: str, playlist: str = "", limit: int = DEFAULT_RESULT_LIMIT) -> Dict[str, Any]:
-    """在 YouTube 歌單中搜尋歌曲（比對歌名與頻道名稱，不分大小寫）。
+    """在 YouTube 歌單中搜尋歌曲（比對歌名、頻道名稱與影片標籤，不分大小寫）。
 
     keyword：至少 2 個字元。playlist：留空＝搜尋全部清單，或指定名稱（見 list_playlists）。
     limit：回傳筆數上限（預設 50）。查詢走本地快取，不耗 YouTube API 配額。
+
+    **跨語言查詢**：歌單約七成曲目來自 YouTube 自動生成的「- Topic」頻道，
+    歌名與頻道名只有英文／羅馬拼音。影片標籤通常帶有藝人的母語名
+    （Eric Chou 的標籤含「周興哲」），所以中文／日文藝人名多半查得到；
+    **但若回傳 0 筆，務必改用該藝人的英文或羅馬拼音名再查一次**
+    （例：田馥甄→Hebe、告五人→Accusefive），兩種寫法都沒命中才回覆找不到。
+
+    每筆結果的 matched_on 標示命中欄位：title／channel 是直接命中；
+    tag 是標籤命中，可能是相關作品而非該藝人本人的歌，回覆時請留意。
     """
     return perform_search(keyword, playlist, limit)
 
@@ -242,7 +252,8 @@ def random_song(
     playlist：留空＝預設清單（playlists.toml 的 [random_song].target），
     `*`＝所有清單，或指定名稱（見 list_playlists）。
     count：抽幾首不重複的歌（1～10，預設 1）。
-    keyword：只從歌名／頻道名稱命中的歌曲中抽（選填，至少 2 個字元）。
+    keyword：只從歌名／頻道名稱／影片標籤命中的歌曲中抽（選填，至少 2 個字元；
+    比對語意與 search_songs 完全一致，包含跨語言的標籤比對）。
     抽選走本地快取，不耗 YouTube API 配額；候選為空時 songs 會是空陣列。
     """
     return perform_random(playlist, count, keyword)

@@ -87,8 +87,8 @@ async with streamablehttp_client("http://yt-music-mcp:8765/mcp") as (read, write
 
 | 工具 | 參數 | 回傳 |
 |------|------|------|
-| `search_songs` | `keyword`（必填，≥2 字元）、`playlist`（選填，留空＝搜全部）、`limit`（預設 50） | `{keyword, searched_playlists, total_matches, returned, results: [{playlist, position, title, channel, views, url}]}` |
-| `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url}]}` |
+| `search_songs` | `keyword`（必填，≥2 字元）、`playlist`（選填，留空＝搜全部）、`limit`（預設 50） | `{keyword, searched_playlists, total_matches, returned, results: [{playlist, position, title, channel, views, url, matched_on}]}`；0 筆時另附 `hint` |
+| `random_song` | `playlist`（選填，留空＝預設清單、`*`＝全部）、`count`（1～10，預設 1）、`keyword`（選填，≥2 字元） | `{playlists, keyword, candidates, returned, songs: [{playlist, position, title, channel, views, url, matched_on}]}`；有給關鍵字卻 0 筆時另附 `hint` |
 | `trending_videos` | `category`（預設 all）、`limit`（1～50，預設 3）、`region`（預設 TW） | `{source, region, category, returned, videos: [{rank, title, channel, views, likes, published_at, duration, duration_seconds, is_live, category_id, url}]}` |
 | `get_video_info` | `video_id`（必填，11 碼） | `{video_id, title, channel, published_at, duration, duration_seconds, is_live, views, thumbnail_url, url}`；錯誤回 `{error: "INVALID_VIDEO_ID"\|"VIDEO_NOT_FOUND"}` |
 | `get_video_transcript` | `video_id`（必填，11 碼）、`max_chars`（預設 8000，0＝不截斷） | `{video_id, language, language_code, is_auto_generated, text, char_count, truncated}`；錯誤回 `{error: "INVALID_VIDEO_ID"\|"VIDEO_NOT_FOUND"\|"NO_TRANSCRIPT"\|"TRANSCRIPT_UPSTREAM_ERROR"}` |
@@ -123,6 +123,34 @@ curl "http://127.0.0.1:8765/random?count=3"              # 抽 3 首不重複
 curl "http://127.0.0.1:8765/random?playlist=BGM%20%2F%20OST"
 curl --get "http://127.0.0.1:8765/random" --data-urlencode "q=ヨルシカ"   # 只從命中的歌抽
 ```
+
+### 🌏 跨語言搜尋（v0.14.0）
+
+歌單約七成曲目來自 YouTube 自動生成的「**- Topic**」頻道，歌名與頻道名只有羅馬字。
+比對範圍已納入影片標籤（藝人的母語名多半在裡面），所以中文／日文／韓文藝人名
+大多查得到。這份標籤資料本來就在既有的 API 回應裡，**不增加任何配額**。
+
+| 查詢 | v0.13 | v0.14 |
+|------|------:|------:|
+| `周興哲` | 0 | 2 |
+| `五月天` | 0 | 2 |
+| `陳奕迅` | 0 | 2 |
+| `林俊傑` | 0 | 3 |
+| `ラッドウィンプス` | 0 | 8 |
+| `あいみょん` | 0 | 5 |
+| `아이유` | 0 | 2 |
+| `周杰倫` | 1 | 16 |
+| `米津玄師` | 1 | 17 |
+
+**給 Agent 的兩個要點：**
+
+1. 每筆結果的 `matched_on` 標示命中欄位——`title`／`channel` 是直接命中（可信），
+   `tag` 是標籤命中。標籤是隱藏欄位，部分頻道會塞宣傳性標籤（實測有影片掛了 60 個
+   標籤、包含一整排他人藝名），所以 `tag` 命中**可能是相關作品而非該藝人本人**，
+   回覆使用者時請留意。直接命中一律排在標籤命中之前。
+2. 查無結果時回傳 `hint` 欄位。**看到 0 筆不要直接回覆「沒有收錄」**——
+   先改用該藝人的英文或羅馬拼音名再查一次（例：田馥甄→Hebe），兩種寫法都沒命中才下結論。
+
 
 錯誤回應：關鍵字太短、`count` 不是整數 → 400；清單名稱不存在 → 404（訊息會列出可用名稱）。
 **候選為空不是錯誤**——回 200 且 `songs: []`，客戶端檢查陣列是否為空即可。

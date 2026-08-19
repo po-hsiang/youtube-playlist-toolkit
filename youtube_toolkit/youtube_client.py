@@ -126,7 +126,7 @@ class YouTubeClient:
     def fetch_video_details(self, video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """批次抓取影片詳情（每批 50 部），
 
-        回傳 {video_id: {"title", "channel", "views", "privacy_status"}}。
+        回傳 {video_id: {"title", "channel", "views", "tags", "privacy_status"}}。
         已刪除或私人影片不會出現在回傳結果中（呼叫端請以 .get() 取值）。
         """
         logger.debug(f"正在批次抓取 {len(video_ids)} 部影片的詳細資訊...")
@@ -146,6 +146,11 @@ class YouTubeClient:
                     "title": snippet.get("title", "N/A"),
                     "channel": snippet.get("channelTitle", "N/A"),
                     "views": int(statistics.get("viewCount", 0)),
+                    # 標籤是跨語言搜尋的關鍵：YouTube 自動生成的「- Topic」頻道會在此
+                    # 放上藝人的各語言名稱（例：Eric Chou → 周興哲），而歌名與頻道名
+                    # 往往只有羅馬字。這份資料本來就在同一次 videos.list 回應裡，
+                    # 取用不增加任何配額。
+                    "tags": snippet.get("tags") or [],
                     "privacy_status": item.get("status", {}).get("privacyStatus"),
                 }
         logger.info(f"影片詳細資訊抓取完畢（{len(details)}/{len(video_ids)} 部有資料）。")
