@@ -11,11 +11,14 @@ from youtube_toolkit.song_search import (
     MATCH_CHANNEL,
     MATCH_TAG,
     MATCH_TITLE,
+    MAX_TRUSTED_TAGS,
     NO_MATCH_HINT,
+    build_matchers,
     match_field,
     pick_random_songs,
     search_playlists,
     tag_matcher,
+    text_matcher,
 )
 
 
@@ -50,8 +53,14 @@ YORUSHIKA = video(
     tags=["Yorushika", "ヨルシカ", "ただ君に晴れ"],
 )
 IU = video("Through the Night", channel="IU - Topic", tags=["IU", "아이유(IU)", "밤편지"])
-# 別人的 MV 掛上宣傳性標籤：標籤比對的已知副作用
+# 別人的 MV 掛上少量宣傳性標籤：仍會命中，但 matched_on=tag 標示得出來
 AIMER_MV = video("蝴蝶結 中文字幕版 MV", channel="音樂搬運頻道", tags=["Aimer", "RADWIMPS", "ONE OK ROCK"])
+# 標籤灌水：實測 優里 那支 MV 掛了 60 個標籤，塞滿一整排他人藝名
+SPAM = video(
+    "優里『メリーゴーランド』Official Music Video",
+    channel="優里 Official YouTube Channel",
+    tags=["優里", "ドライフラワー"] + [f"tag{i}" for i in range(24)] + ["米津玄師", "BTS"],
+)
 
 
 class TestTagMatcher(unittest.TestCase):
@@ -129,8 +138,8 @@ class TestSearchAcrossLanguages(unittest.TestCase):
         self.assertEqual(result["total_matches"], 1)
         self.assertEqual(result["results"][0]["matched_on"], MATCH_CHANNEL)
 
-    def test_promotional_tags_are_a_known_side_effect(self):
-        """他人 MV 上的宣傳標籤會被命中，但 matched_on=tag 讓呼叫端看得出來。"""
+    def test_small_promotional_tag_sets_still_match(self):
+        """標籤數正常的他人 MV 仍會被命中，但 matched_on=tag 讓呼叫端看得出來。"""
         result = search_playlists("RADWIMPS", ["清單"], getter({"清單": [AIMER_MV]}))
         self.assertEqual(result["total_matches"], 1)
         self.assertEqual(result["results"][0]["matched_on"], MATCH_TAG)
@@ -194,6 +203,65 @@ class TestRandomSharesMatchSemantics(unittest.TestCase):
         result = pick_random_songs(["清單"], getter({"清單": [ERIC]}), rng=random.Random(0))
         self.assertNotIn("hint", result)
         self.assertEqual(result["songs"][0]["matched_on"], "")
+
+
+class TestTextMatcher(unittest.TestCase):
+    """歌名／頻道用「詞首」比對：擋掉字中間誤命中，但保留前綴搜尋。"""
+
+    def test_prefix_search_still_works(self):
+        self.assertTrue(text_matcher("monster")("monsters (cover)"))
+        self.assertTrue(text_matcher("yorushi")("yorushika - topic"))
+        self.assertTrue(text_matcher("tayl")("taylor swift"))
+
+    def test_mid_word_hits_are_blocked(self):
+        self.assertFalse(text_matcher("hebe")("onlythebestost"))  # t-hebe-st，實測誤命中
+        self.assertFalse(text_matcher("live")("buried alive"))
+        self.assertFalse(text_matcher("ost")("hostage"))
+        self.assertFalse(text_matcher("iu")("aiuta"))
+
+    def test_word_start_after_punctuation_or_cjk(self):
+        self.assertTrue(text_matcher("live")("🔴d-live 2022新北河海"))
+        self.assertTrue(text_matcher("2000")("随身听2000"))  # 中文字不算英數字，仍是詞首
+
+    def test_cjk_keyword_uses_substring(self):
+        self.assertTrue(text_matcher("興哲")("周興哲的歌"))
+
+    def test_text_rule_is_looser_than_tag_rule(self):
+        """兩層嚴格度刻意不同：歌名／頻道允許前綴，標籤要求整詞。"""
+        match_text, match_tag = build_matchers("monster")
+        self.assertTrue(match_text("monsters"))
+        self.assertFalse(match_tag("monsters"))
+
+
+class TestTagSpamCap(unittest.TestCase):
+    """標籤灌水的影片整支不採信其標籤（實測砍掉的全是雜訊）。"""
+
+    def _tagged(self, count):
+        return video("某首歌", channel="某頻道", tags=[f"tag{i}" for i in range(count - 1)] + ["米津玄師"])
+
+    def test_tags_at_the_limit_are_trusted(self):
+        self.assertEqual(match_field(self._tagged(MAX_TRUSTED_TAGS), "米津玄師"), MATCH_TAG)
+
+    def test_tags_over_the_limit_are_ignored(self):
+        self.assertEqual(match_field(self._tagged(MAX_TRUSTED_TAGS + 1), "米津玄師"), "")
+
+    def test_spam_video_is_excluded_from_search(self):
+        result = search_playlists("米津玄師", ["清單"], getter({"清單": [SPAM]}))
+        self.assertEqual(result["total_matches"], 0)
+        self.assertIn("hint", result)
+
+    def test_cap_only_blocks_tags_not_title_or_channel(self):
+        self.assertEqual(match_field(SPAM, "優里"), MATCH_TITLE)
+
+
+class TestWordStartInSearch(unittest.TestCase):
+    def test_mid_word_channel_no_longer_matches(self):
+        ost = video("Parasyte OST Full", channel="OnlyTheBestOST")
+        self.assertEqual(search_playlists("Hebe", ["清單"], getter({"清單": [ost]}))["total_matches"], 0)
+
+    def test_prefix_search_survives(self):
+        songs = {"清單": [video("Monsters (Cover)")]}
+        self.assertEqual(search_playlists("monster", ["清單"], getter(songs))["total_matches"], 1)
 
 
 if __name__ == "__main__":
